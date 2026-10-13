@@ -1,0 +1,501 @@
+@import 'tailwindcss';
+
+/*
+ * Design tokens.
+ * Base values below are fallbacks; ThemeProvider overwrites the primitives
+ * (bg/panel/line/text/accent/…) from tenant branding. Everything else is
+ * DERIVED from those primitives so any brand color + light/dark just works.
+ * `.erp-scope` lets a subtree (e.g. tenant preview cards) carry its own palette.
+ */
+:root,
+.erp-scope {
+  --erp-bg: #0b0f0e;
+  --erp-panel: #121816;
+  --erp-panel-2: #18201d;
+  --erp-line: #24302b;
+  --erp-line-hover: #355046;
+  --erp-text: #f3f7f5;
+  --erp-muted: #9aa8a1;
+  --erp-accent: #1ecf8a;
+  --erp-accent-2: #149a66;
+  --erp-on-accent: #04140d;
+  --erp-hover: rgba(255, 255, 255, 0.05);
+  --erp-danger: #f87171;
+  --erp-warning: #fbbf24;
+  --erp-info: #60a5fa;
+  --erp-success: #34d399;
+  --erp-shadow: 0 12px 32px rgba(0, 0, 0, 0.38);
+
+  --erp-accent-soft: color-mix(in srgb, var(--erp-accent) 14%, transparent);
+  --erp-accent-softer: color-mix(in srgb, var(--erp-accent) 7%, transparent);
+  --erp-accent-glow: color-mix(in srgb, var(--erp-accent) 30%, transparent);
+  --erp-grad-accent: linear-gradient(135deg, var(--erp-accent) 0%, var(--erp-accent-2) 100%);
+  --erp-grad-panel: linear-gradient(
+    150deg,
+    var(--erp-panel-2) 0%,
+    var(--erp-panel) 60%
+  );
+  --erp-grad-soft: linear-gradient(
+    120deg,
+    var(--erp-accent-soft) 0%,
+    var(--erp-accent-softer) 45%,
+    transparent 100%
+  );
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--erp-text);
+  background:
+    radial-gradient(ellipse 80% 50% at 10% -10%, var(--erp-accent-soft), transparent 55%),
+    radial-gradient(ellipse 60% 40% at 90% 0%, var(--erp-accent-softer), transparent 50%),
+    var(--erp-bg);
+  background-attachment: fixed;
+  font-family:
+    'Inter',
+    'Segoe UI',
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--erp-accent) 35%, transparent);
+  color: var(--erp-text);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+:focus-visible {
+  outline: 2px solid var(--erp-accent);
+  outline-offset: 2px;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--erp-line-hover);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--erp-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ---------- Surfaces ---------- */
+.erp-panel {
+  background: var(--erp-grad-panel);
+  border: 1px solid var(--erp-line);
+  border-radius: 1rem;
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
+}
+
+.erp-panel:hover {
+  border-color: var(--erp-line-hover);
+}
+
+.erp-panel-interactive {
+  cursor: pointer;
+}
+.erp-panel-interactive:hover {
+  border-color: var(--erp-accent);
+  box-shadow: var(--erp-shadow);
+  transform: translateY(-2px);
+}
+
+.erp-text-accent {
+  color: var(--erp-accent);
+}
+.erp-text-muted {
+  color: var(--erp-muted);
+}
+.erp-hover:hover {
+  background: var(--erp-hover);
+}
+
+/* ---------- Buttons ---------- */
+.erp-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border-radius: 0.75rem;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease,
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    opacity 0.15s ease;
+  cursor: pointer;
+}
+
+.erp-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.erp-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.erp-btn-sm {
+  padding: 0.3rem 0.65rem;
+  font-size: 0.75rem;
+  border-radius: 0.6rem;
+}
+
+.erp-btn-primary {
+  background: var(--erp-grad-accent);
+  color: var(--erp-on-accent);
+  border: none;
+  box-shadow: 0 4px 16px var(--erp-accent-glow);
+}
+
+.erp-btn-primary:hover:not(:disabled) {
+  box-shadow: 0 6px 22px var(--erp-accent-glow);
+  filter: brightness(1.06);
+}
+
+.erp-btn-ghost {
+  background: transparent;
+  border: 1px solid var(--erp-line);
+  color: var(--erp-text);
+}
+
+.erp-btn-ghost:hover:not(:disabled) {
+  border-color: var(--erp-accent);
+  background: var(--erp-accent-soft);
+  color: var(--erp-accent);
+}
+
+.erp-btn-danger {
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--erp-danger) 40%, transparent);
+  color: var(--erp-danger);
+}
+
+.erp-btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--erp-danger) 12%, transparent);
+  border-color: color-mix(in srgb, var(--erp-danger) 60%, transparent);
+}
+
+.erp-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 0.7rem;
+  border: 1px solid var(--erp-line);
+  color: var(--erp-muted);
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.erp-icon-btn:hover {
+  color: var(--erp-accent);
+  border-color: var(--erp-accent);
+  background: var(--erp-accent-soft);
+}
+
+/* ---------- Forms ---------- */
+.erp-input {
+  width: 100%;
+  border-radius: 0.75rem;
+  border: 1px solid var(--erp-line);
+  background: color-mix(in srgb, var(--erp-bg) 60%, var(--erp-panel));
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  color: var(--erp-text);
+  outline: none;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    background 0.15s ease;
+}
+
+.erp-input::placeholder {
+  color: color-mix(in srgb, var(--erp-muted) 80%, transparent);
+}
+
+.erp-input:hover {
+  border-color: var(--erp-line-hover);
+}
+
+.erp-input:focus {
+  border-color: var(--erp-accent);
+  box-shadow: 0 0 0 3px var(--erp-accent-soft);
+  background: var(--erp-panel);
+}
+
+.erp-label {
+  display: block;
+  margin-bottom: 0.3rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--erp-muted);
+}
+
+.erp-row > td {
+  transition: background 0.15s ease;
+}
+
+.erp-row:hover > td {
+  background: var(--erp-accent-softer);
+}
+
+.erp-row:hover > td.sticky {
+  background: color-mix(in srgb, var(--erp-panel) 92%, var(--erp-accent));
+}
+
+.erp-check {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 1.15rem;
+  height: 1.15rem;
+  margin: 0;
+  border-radius: 0.35rem;
+  border: 1.5px solid var(--erp-line-hover);
+  background: color-mix(in srgb, var(--erp-bg) 60%, var(--erp-panel));
+  cursor: pointer;
+  display: grid;
+  place-content: center;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.12s ease;
+}
+
+.erp-check:hover {
+  border-color: var(--erp-accent);
+  box-shadow: 0 0 0 3px var(--erp-accent-soft);
+  transform: scale(1.06);
+}
+
+.erp-check:checked {
+  background: var(--erp-grad-accent);
+  border-color: transparent;
+  box-shadow: 0 0 10px var(--erp-accent-glow);
+}
+
+.erp-check:checked::after {
+  content: '';
+  width: 0.32rem;
+  height: 0.55rem;
+  border: solid var(--erp-on-accent);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg) translateY(-1px);
+}
+
+.erp-check:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* ---------- Chips & badges ---------- */
+.erp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 999px;
+  border: 1px solid var(--erp-line);
+  padding: 0.3rem 0.75rem;
+  font-size: 0.75rem;
+  color: var(--erp-muted);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.erp-chip:hover {
+  border-color: var(--erp-accent);
+  color: var(--erp-accent);
+  background: var(--erp-accent-soft);
+}
+
+.erp-chip-active {
+  border-color: transparent;
+  color: var(--erp-on-accent);
+  background: var(--erp-grad-accent);
+  font-weight: 600;
+}
+
+.erp-chip-active:hover {
+  color: var(--erp-on-accent);
+  filter: brightness(1.05);
+}
+
+.erp-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.erp-badge-success {
+  color: var(--erp-success);
+  background: color-mix(in srgb, var(--erp-success) 14%, transparent);
+  border-color: color-mix(in srgb, var(--erp-success) 30%, transparent);
+}
+.erp-badge-danger {
+  color: var(--erp-danger);
+  background: color-mix(in srgb, var(--erp-danger) 14%, transparent);
+  border-color: color-mix(in srgb, var(--erp-danger) 30%, transparent);
+}
+.erp-badge-warning {
+  color: var(--erp-warning);
+  background: color-mix(in srgb, var(--erp-warning) 14%, transparent);
+  border-color: color-mix(in srgb, var(--erp-warning) 30%, transparent);
+}
+.erp-badge-accent {
+  color: var(--erp-accent);
+  background: var(--erp-accent-soft);
+  border-color: color-mix(in srgb, var(--erp-accent) 30%, transparent);
+}
+.erp-badge-neutral {
+  color: var(--erp-muted);
+  background: var(--erp-hover);
+  border-color: var(--erp-line);
+}
+
+.erp-kbd {
+  border: 1px solid var(--erp-line);
+  border-bottom-width: 2px;
+  border-radius: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  font-size: 0.68rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--erp-muted);
+  background: var(--erp-panel);
+}
+
+/* ---------- Navigation ---------- */
+.erp-nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  border-radius: 0.7rem;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--erp-muted);
+  transition: all 0.15s ease;
+}
+.erp-nav-item:hover {
+  color: var(--erp-text);
+  background: var(--erp-hover);
+}
+.erp-nav-item-active {
+  color: var(--erp-accent);
+  background: var(--erp-accent-soft);
+  font-weight: 600;
+}
+.erp-nav-item-active::before {
+  content: '';
+  position: absolute;
+  left: -0.6rem;
+  top: 22%;
+  bottom: 22%;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--erp-grad-accent);
+}
+
+/* ---------- Overlays ---------- */
+.erp-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: color-mix(in srgb, #000 55%, transparent);
+  backdrop-filter: blur(3px);
+  animation: erp-fade 0.15s ease;
+}
+.erp-popover {
+  background: var(--erp-panel);
+  border: 1px solid var(--erp-line);
+  border-radius: 0.9rem;
+  box-shadow: var(--erp-shadow);
+  animation: erp-pop 0.14s ease;
+}
+
+.erp-skeleton {
+  border-radius: 0.6rem;
+  background: linear-gradient(
+    90deg,
+    var(--erp-panel-2) 25%,
+    var(--erp-line) 50%,
+    var(--erp-panel-2) 75%
+  );
+  background-size: 200% 100%;
+  animation: erp-shimmer 1.4s infinite;
+}
+
+@keyframes erp-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes erp-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+@keyframes erp-slide-in {
+  from {
+    transform: translateX(100%);
+  }
+}
+@keyframes erp-slide-left {
+  from {
+    transform: translateX(-100%);
+  }
+}
+@keyframes erp-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}

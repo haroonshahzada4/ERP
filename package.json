@@ -1,0 +1,28 @@
+{
+  "name": "erp-saas",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-tenant SaaS ERP (HRM-first) - NestJS + React + TypeORM",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "db:ensure": "npm run db:ensure -w @erp/api",
+    "dev:api": "npm run start:dev -w @erp/api",
+    "dev:web": "npm run dev -w @erp/web",
+    "dev": "concurrently -k -n api,web -c blue,green \"npm run start:dev -w @erp/api\" \"npm run dev:web\"",
+    "build:api": "npm run build -w @erp/api",
+    "build:web": "npm run build -w @erp/web",
+    "build": "npm run build:api && npm run build:web",
+    "lint": "npm run lint -w @erp/api && npm run lint -w @erp/web",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.6"
+  }
+}
