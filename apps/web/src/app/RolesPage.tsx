@@ -250,8 +250,8 @@ export function RolesPage() {
             </p>
             <h1 className="mt-2 text-3xl font-semibold tracking-tight">Roles & permissions</h1>
             <p className="mt-2 max-w-xl text-[var(--erp-muted)]">
-              System roles ship with sensible defaults. Company Admin has full company
-              access; tweak grants below or assign members to HR, Manager, and Employee.
+              Only Company Admin has full company access. HR, Manager, and Employee start
+              with no grants — assign permissions dynamically below.
             </p>
           </div>
           <button

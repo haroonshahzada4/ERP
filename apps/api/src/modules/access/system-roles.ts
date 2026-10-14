@@ -16,48 +16,11 @@ export const TENANT_SYSTEM_ROLES = [
 ] as const;
 
 /**
- * Default permission keys granted to system roles on seed.
- * Company Admin uses tenant:* (no row grants). Custom roles are untouched.
+ * No hardcoded grants for HR / Manager / Employee.
+ * Only Company Admin has implicit full tenant access (`tenant:*`).
+ * All other roles receive permissions only via dynamic RBAC assignment.
  */
-/**
- * Local demo defaults only — production Company Admins assign grants explicitly.
- * Attendance scope: Employee=self, Manager=team, HR=company (via update/import).
- */
-export const SYSTEM_ROLE_DEFAULT_PERMISSIONS: Record<string, string[]> = {
-  [HR_MANAGER_ROLE]: [
-    'employee.read',
-    'employee.write',
-    'attendance.create',
-    'attendance.read',
-    'attendance.update',
-    'attendance.import',
-    'attendance.export',
-    'attendance.report.read',
-    'attendance.approve',
-    'leave.read',
-    'leave.approve',
-    'payroll.view',
-    'payroll.generate',
-    'payroll.approve.hr',
-    'recruitment.read',
-    'recruitment.write',
-    'tenant.settings',
-  ],
-  [MANAGER_ROLE]: [
-    'employee.read',
-    'attendance.create',
-    'attendance.read',
-    'attendance.report.read',
-    'leave.read',
-    'leave.approve',
-  ],
-  [EMPLOYEE_ROLE]: [
-    'employee.read',
-    'attendance.create',
-    'attendance.read',
-    'leave.read',
-  ],
-};
+export const SYSTEM_ROLE_DEFAULT_PERMISSIONS: Record<string, string[]> = {};
 
 /** Legacy key migrated to company_admin on seed. */
 export const LEGACY_TENANT_ADMIN_ROLE = 'tenant_admin';

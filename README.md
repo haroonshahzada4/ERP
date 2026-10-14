@@ -25,13 +25,15 @@ Tenant is identified by the **subdomain** you open — there is no company picke
 | Horizon Logistics | http://horizon.localhost:5173 | `admin@horizon.com` | `admin` | Orange |
 | Summit Foods | http://summit.localhost:5173 | `admin@summit.com` | `admin` | Sky |
 
-| Role | URL | Email | Password | Sees |
+| Role | URL | Email | Password | Access |
 | --- | --- | --- | --- | --- |
 | Super Admin | http://localhost:5173/platform/login | `superadmin@demo.com` | `admin` | Platform console |
-| Company Admin | http://demo.localhost:5173 | `admin@demo.com` | `admin` | Everything |
-| HR | http://demo.localhost:5173 | `aisha.khan@demo.com` | `admin` | Employees, full attendance (edit/import/export/reports), leave, payroll, recruitment, settings |
-| Manager | http://demo.localhost:5173 | `sara.malik@demo.com` | `admin` | Employees (read), attendance check-in + team timesheet/reports, leave |
-| Employee | http://demo.localhost:5173 | `bilal.ahmed@demo.com` | `admin` | Employees (read), own check-in/out + attendance history, leave (read) |
+| Company Admin | http://demo.localhost:5173 | `admin@demo.com` | `admin` | Full company access (`tenant:*`) |
+| HR | http://demo.localhost:5173 | `aisha.khan@demo.com` | `admin` | Role only — no default permissions (assign in Roles & Access) |
+| Manager | http://demo.localhost:5173 | `sara.malik@demo.com` | `admin` | Role only — no default permissions (assign in Roles & Access) |
+| Employee | http://demo.localhost:5173 | `bilal.ahmed@demo.com` | `admin` | Role only — no default permissions (assign in Roles & Access) |
+
+Only **Company Admin** has built-in full company access. HR / Manager / Employee start with **zero grants**; permissions are assigned dynamically per tenant.
 
 `*.localhost` resolves to `127.0.0.1` on modern browsers — no hosts file edit needed.
 

@@ -12,7 +12,6 @@ import {
   HR_MANAGER_ROLE,
   LEGACY_TENANT_ADMIN_ROLE,
   MANAGER_ROLE,
-  SYSTEM_ROLE_DEFAULT_PERMISSIONS,
   TENANT_SYSTEM_ROLES,
 } from '../../../modules/access/system-roles';
 import { Holiday } from '../../../modules/hrm/attendance/entities/holiday.entity';
@@ -103,7 +102,7 @@ export const seedDemoData = seedTenantData;
 
 /**
  * Starter permission *definitions* for a new tenant library.
- * System roles receive default grants via SYSTEM_ROLE_DEFAULT_PERMISSIONS.
+ * Not role grants — Company Admin assigns these to HR / Manager / Employee.
  */
 const STARTER_PERMISSION_DEFINITIONS = [
   { key: 'employee.read', label: 'View employees' },
@@ -205,45 +204,101 @@ async function seedRbac(tenantDs: DataSource) {
     }
   }
 
-  await ensureSystemRoleDefaultGrants(tenantDs);
+  // Strip previously hardcoded demo grants so only dynamic RBAC remains.
+  await stripHardcodedSystemRoleGrants(tenantDs);
 }
 
-/** Sync default permission grants onto HR / Manager / Employee system roles. */
-async function ensureSystemRoleDefaultGrants(tenantDs: DataSource) {
-  const permissionRepo = tenantDs.getRepository(Permission);
+/**
+ * One-time cleanup of former seed defaults on HR / Manager / Employee.
+ * Only clears when the role’s grants exactly match a known hardcoded set —
+ * custom grants assigned by Company Admin are preserved.
+ */
+async function stripHardcodedSystemRoleGrants(tenantDs: DataSource) {
   const roleRepo = tenantDs.getRepository(Role);
   const rpRepo = tenantDs.getRepository(RolePermission);
 
-  for (const [roleKey, permKeys] of Object.entries(
-    SYSTEM_ROLE_DEFAULT_PERMISSIONS,
-  )) {
+  const knownDefaults: Record<string, string[][]> = {
+    [HR_MANAGER_ROLE]: [
+      [
+        'employee.read',
+        'employee.write',
+        'attendance.read',
+        'attendance.approve',
+        'leave.read',
+        'leave.approve',
+        'payroll.view',
+        'payroll.generate',
+        'payroll.approve.hr',
+        'roles.manage',
+        'tenant.settings',
+      ],
+      [
+        'employee.read',
+        'employee.write',
+        'attendance.create',
+        'attendance.read',
+        'attendance.update',
+        'attendance.import',
+        'attendance.export',
+        'attendance.report.read',
+        'attendance.approve',
+        'leave.read',
+        'leave.approve',
+        'payroll.view',
+        'payroll.generate',
+        'payroll.approve.hr',
+        'recruitment.read',
+        'recruitment.write',
+        'tenant.settings',
+      ],
+    ],
+    [MANAGER_ROLE]: [
+      [
+        'employee.read',
+        'attendance.read',
+        'attendance.approve',
+        'leave.read',
+        'leave.approve',
+      ],
+      [
+        'employee.read',
+        'attendance.create',
+        'attendance.read',
+        'attendance.report.read',
+        'leave.read',
+        'leave.approve',
+      ],
+    ],
+    [EMPLOYEE_ROLE]: [
+      ['employee.read', 'attendance.read', 'leave.read'],
+      [
+        'employee.read',
+        'attendance.create',
+        'attendance.read',
+        'leave.read',
+      ],
+    ],
+  };
+
+  for (const [roleKey, variants] of Object.entries(knownDefaults)) {
     const role = await roleRepo.findOne({ where: { key: roleKey } });
     if (!role) continue;
-
-    const desired = new Set(permKeys);
-    const existing = await rpRepo.find({
+    const links = await rpRepo.find({
       where: { roleId: role.id },
       relations: { permission: true },
     });
-    const have = new Set(existing.map((l) => l.permission.key));
-
-    for (const link of existing) {
-      if (!desired.has(link.permission.key)) {
-        await rpRepo.remove(link);
-      }
-    }
-
-    for (const key of desired) {
-      if (have.has(key)) continue;
-      const perm = await permissionRepo.findOne({ where: { key } });
-      if (!perm) continue;
-      await rpRepo.save(
-        rpRepo.create({ roleId: role.id, permissionId: perm.id }),
-      );
-    }
+    if (!links.length) continue;
+    const current = new Set(links.map((l) => l.permission.key));
+    const isHardcoded = variants.some(
+      (keys) =>
+        current.size === keys.length && keys.every((k) => current.has(k)),
+    );
+    if (!isHardcoded) continue;
+    await rpRepo.remove(links);
+    logger.log(
+      `Cleared hardcoded seed grants from role ${roleKey} (dynamic RBAC only)`,
+    );
   }
-
-  logger.log('System role default permissions synced (HR / Manager / Employee)');
 }
 
 async function seedAdminUser(masterDs: DataSource, options: DemoSeederOptions) {
