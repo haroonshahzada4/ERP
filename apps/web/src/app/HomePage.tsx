@@ -1,5 +1,14 @@
 import { useQuery } from '@tanstack/react-query';
-import { ArrowRight, Building, KeyRound, Network, Users } from 'lucide-react';
+import {
+  ArrowRight,
+  Building,
+  CalendarDays,
+  CalendarRange,
+  KeyRound,
+  Network,
+  Users,
+  Wallet,
+} from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { StatCard } from '../components/ui';
 import { apiGet } from '../lib/api';
@@ -16,6 +25,10 @@ function permissionLabel(key: string) {
   if (key === 'tenant:*') return 'Company full access';
   if (key === 'platform.tenants') return 'Manage all tenants';
   return key;
+}
+
+function roleLabel(key: string) {
+  return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function greeting() {
@@ -41,6 +54,7 @@ export function HomePage() {
   });
 
   const permissions = session?.permissions ?? [];
+  const roles = session?.roles ?? [];
   const visiblePermissions = permissions.filter((p) => p !== '*' && p !== 'tenant:*');
   const scopeBadge = session?.isPlatformAdmin
     ? 'Platform full access'
@@ -48,12 +62,20 @@ export function HomePage() {
       ? 'Company full access'
       : null;
 
-  const company = branding.name ?? session?.tenant.name ?? 'your company';
+  const company = branding.name ?? session?.tenant?.name ?? 'your company';
   const firstName = session?.user.fullName.split(' ')[0] ?? 'there';
 
   const actions = [
     { to: '/employees', label: 'Manage employees', perm: 'employee.read', icon: Users },
     { to: '/organization', label: 'Organization setup', perm: 'employee.read', icon: Network },
+    {
+      to: '/attendance',
+      label: 'Attendance',
+      perm: 'attendance.read',
+      icon: CalendarDays,
+    },
+    { to: '/leaves', label: 'Leaves', perm: 'leave.read', icon: CalendarRange },
+    { to: '/payroll', label: 'Payroll', perm: 'payroll.view', icon: Wallet },
     { to: '/roles', label: 'Roles & access', perm: 'roles.manage', icon: KeyRound },
     { to: '/settings', label: 'Company branding', perm: 'tenant.settings', icon: Building },
   ].filter((a) => hasPermission(a.perm));
@@ -76,9 +98,14 @@ export function HomePage() {
         <p className="mt-2 max-w-2xl text-sm text-[var(--erp-muted)]">
           Here’s what’s happening in your workspace today.
         </p>
-        {scopeBadge && (
-          <span className="erp-badge erp-badge-accent mt-4">{scopeBadge}</span>
-        )}
+        <div className="mt-4 flex flex-wrap gap-2">
+          {roles.map((role) => (
+            <span key={role} className="erp-badge erp-badge-accent">
+              {roleLabel(role)}
+            </span>
+          ))}
+          {scopeBadge && <span className="erp-badge erp-badge-accent">{scopeBadge}</span>}
+        </div>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -108,7 +135,7 @@ export function HomePage() {
           label="Your permissions"
           value={scopeBadge ? 'All' : visiblePermissions.length}
           icon={<KeyRound size={16} />}
-          hint={session?.roles.join(', ').replace(/_/g, ' ') || 'No role assigned'}
+          hint={roles.map(roleLabel).join(', ') || 'No role assigned'}
         />
       </div>
 

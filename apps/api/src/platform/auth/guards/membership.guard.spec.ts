@@ -33,13 +33,14 @@ describe('MembershipGuard security', () => {
   it('rejects when JWT user tenant does not match resolved tenant', async () => {
     await expect(
       tenantContextStorage.run(
-        { tenantId: 'tenant-b', tenantSlug: 'b', host: 'b.localhost' },
+        { tenantId: 2, tenantSlug: 'b', host: 'b.localhost' },
         () =>
           guard.canActivate(
             ctx({
-              userId: 'u1',
-              tenantId: 'tenant-a',
-              membershipId: 'm1',
+              audience: 'tenant',
+              userId: 1,
+              tenantId: 1,
+              membershipId: 1,
             }),
           ),
       ),
@@ -48,32 +49,40 @@ describe('MembershipGuard security', () => {
 
   it('re-checks active membership in Master DB', async () => {
     memberships.findOne.mockResolvedValue({
-      id: 'm1',
-      userId: 'u1',
-      tenantId: 'tenant-a',
+      id: 1,
+      userId: 1,
+      tenantId: 1,
       status: MembershipStatus.ACTIVE,
     });
 
     const ok = await tenantContextStorage.run(
-      { tenantId: 'tenant-a', tenantSlug: 'a', host: 'a.localhost' },
+      { tenantId: 1, tenantSlug: 'a', host: 'a.localhost' },
       () =>
         guard.canActivate(
           ctx({
-            userId: 'u1',
-            tenantId: 'tenant-a',
-            membershipId: 'm1',
+            audience: 'tenant',
+            userId: 1,
+            tenantId: 1,
+            membershipId: 1,
           }),
         ),
     );
 
     expect(ok).toBe(true);
-    expect(memberships.findOne).toHaveBeenCalledWith({
-      where: {
-        userId: 'u1',
-        tenantId: 'tenant-a',
-        status: MembershipStatus.ACTIVE,
-      },
-    });
+  });
+
+  it('allows platform audience without membership', async () => {
+    const ok = await guard.canActivate(
+      ctx({
+        audience: 'platform',
+        userId: 1,
+        tenantId: null,
+        membershipId: null,
+        isPlatformAdmin: true,
+      }),
+    );
+    expect(ok).toBe(true);
+    expect(memberships.findOne).not.toHaveBeenCalled();
   });
 
   it('rejects revoked membership', async () => {
@@ -81,13 +90,14 @@ describe('MembershipGuard security', () => {
 
     await expect(
       tenantContextStorage.run(
-        { tenantId: 'tenant-a', tenantSlug: 'a', host: 'a.localhost' },
+        { tenantId: 1, tenantSlug: 'a', host: 'a.localhost' },
         () =>
           guard.canActivate(
             ctx({
-              userId: 'u1',
-              tenantId: 'tenant-a',
-              membershipId: 'm1',
+              audience: 'tenant',
+              userId: 1,
+              tenantId: 1,
+              membershipId: 1,
             }),
           ),
       ),

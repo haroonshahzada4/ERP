@@ -1,4 +1,4 @@
-import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
+import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { FEATURES_KEY } from '../../common/decorators/features.decorator';
 import { IS_PUBLIC_KEY } from '../../common/decorators/public.decorator';
@@ -10,6 +10,7 @@ import { SupportAccessService } from './support-access.service';
 /**
  * Enforces Master-DB feature entitlements for the host-resolved tenant.
  * Independent of RBAC: Feature enabled AND user authorized.
+ * Platform tokens without an approved support grant cannot use tenant features.
  */
 @Injectable()
 export class FeatureGuard implements CanActivate {
@@ -33,13 +34,14 @@ export class FeatureGuard implements CanActivate {
     if (!required?.length) return true;
 
     const tenant = getTenantContext();
-    if (!tenant) return true; // MembershipGuard / JwtStrategy handle missing tenant
+    if (!tenant) {
+      throw new ForbiddenException('Tenant context required for feature check');
+    }
 
     const request = context.switchToHttp().getRequest<{ user?: AuthUser }>();
     const user = request.user;
 
-    // Active support grant may temporarily unlock requested features for Super Admin.
-    if (user?.isPlatformAdmin) {
+    if (user?.audience === 'platform' || user?.isPlatformAdmin) {
       const grant = await this.supportAccess.getActiveGrant(
         user.userId,
         tenant.tenantId,
@@ -52,7 +54,9 @@ export class FeatureGuard implements CanActivate {
         );
         if (ok) return true;
       }
-      // Without a matching support grant, Super Admin still cannot use tenant features.
+      throw new ForbiddenException(
+        'Support access grant required for tenant features',
+      );
     }
 
     await this.entitlements.assertFeatures(tenant.tenantId, required);

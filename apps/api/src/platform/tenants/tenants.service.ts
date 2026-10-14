@@ -132,14 +132,60 @@ export class TenantsService {
   }
 
   async remove(id: number) {
+    return this.suspend(id);
+  }
+
+  async suspend(id: number) {
     const tenant = await this.tenants.findOne({ where: { id } });
     if (!tenant) throw new NotFoundException('Tenant not found');
     if (tenant.slug === 'demo') {
-      throw new BadRequestException('Demo tenant cannot be deleted');
+      throw new BadRequestException('Demo tenant cannot be suspended');
     }
     tenant.status = TenantStatus.SUSPENDED;
     await this.tenants.save(tenant);
     return { status: 'ok', id, action: 'suspended' };
+  }
+
+  async activate(id: number) {
+    const tenant = await this.tenants.findOne({
+      where: { id },
+      relations: { databases: true, domains: true },
+    });
+    if (!tenant) throw new NotFoundException('Tenant not found');
+    if (tenant.status === TenantStatus.FAILED) {
+      throw new BadRequestException(
+        'Tenant provisioning failed — use retry before activate',
+      );
+    }
+    if (!tenant.databases?.length) {
+      throw new BadRequestException('Tenant database missing');
+    }
+    tenant.status = TenantStatus.ACTIVE;
+    tenant.lastError = null;
+    await this.tenants.save(tenant);
+    return this.toSafeTenant(tenant);
+  }
+
+  async retryProvision(id: number) {
+    const tenant = await this.provisioner.retry(id);
+    return this.toSafeTenant(tenant);
+  }
+
+  async getProvisioningStatus(id: number) {
+    const tenant = await this.tenants.findOne({
+      where: { id },
+      relations: { domains: true, databases: true },
+    });
+    if (!tenant) throw new NotFoundException('Tenant not found');
+    return {
+      id: tenant.id,
+      slug: tenant.slug,
+      status: tenant.status,
+      lastError: tenant.lastError,
+      schemaVersion: tenant.schemaVersion,
+      databaseName: tenant.databases?.[0]?.dbName ?? null,
+      domains: (tenant.domains ?? []).map((d) => d.host),
+    };
   }
 
   async getCurrentTenantStatus() {
@@ -291,6 +337,7 @@ export class TenantsService {
       brandPrimary: tenant.brandPrimary,
       brandSecondary: tenant.brandSecondary,
       themeMode: tenant.themeMode,
+      lastError: tenant.lastError,
       domains: (tenant.domains ?? []).map((d) => d.host),
       databaseName: tenant.databases?.[0]?.dbName ?? null,
       createdAt: tenant.createdAt,

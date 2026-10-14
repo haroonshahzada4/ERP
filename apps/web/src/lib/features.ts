@@ -22,13 +22,13 @@ export const ROUTE_FEATURES: Record<string, string> = {
 export function useEntitlements() {
   const { session } = useAuth();
   return useQuery({
-    queryKey: ['entitlements-current', session?.tenant.slug],
+    queryKey: ['entitlements-current', session?.tenant?.slug],
     queryFn: () =>
       apiGet<CurrentEntitlements>(
         '/platform/entitlements/current',
         session?.accessToken,
       ),
-    enabled: !!session,
+    enabled: !!session && session.audience !== 'platform',
     staleTime: 60_000,
   });
 }

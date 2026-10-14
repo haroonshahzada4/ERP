@@ -1,5 +1,26 @@
-import { Body, Controller, ForbiddenException, Get, Param, ParseIntPipe, Patch, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  ForbiddenException,
+  Get,
+  Param,
+  ParseIntPipe,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  IsArray,
+  IsBoolean,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Min,
+  MinLength,
+} from 'class-validator';
 import {
   AuthUser,
   CurrentUser,
@@ -14,11 +35,67 @@ import { PlatformAuditService } from './platform-audit.service';
 import { SupportAccessService } from './support-access.service';
 
 class SetFeaturesDto {
+  @IsArray()
+  @IsString({ each: true })
   featureKeys!: string[];
 }
 
 class AssignPlanDto {
+  @IsString()
+  @MinLength(1)
   planSlug!: string;
+}
+
+class CreatePlanDto {
+  @IsString() @MinLength(2) slug!: string;
+  @IsString() @MinLength(2) name!: string;
+  @IsOptional() @IsString() description?: string | null;
+  @IsOptional() @IsInt() @Min(0) priceMonthlyCents?: number;
+  @IsOptional() @IsString() currency?: string;
+  @IsOptional() @IsArray() @IsString({ each: true }) featureKeys?: string[];
+  @IsOptional() @IsInt() sortOrder?: number;
+  @IsOptional() @IsBoolean() isActive?: boolean;
+}
+
+class UpdatePlanDto {
+  @IsOptional() @IsString() @MinLength(2) name?: string;
+  @IsOptional() @IsString() description?: string | null;
+  @IsOptional() @IsInt() @Min(0) priceMonthlyCents?: number;
+  @IsOptional() @IsString() currency?: string;
+  @IsOptional() @IsArray() @IsString({ each: true }) featureKeys?: string[];
+  @IsOptional() @IsInt() sortOrder?: number;
+  @IsOptional() @IsBoolean() isActive?: boolean;
+}
+
+class CreateModuleDto {
+  @IsString() @MinLength(2) key!: string;
+  @IsString() @MinLength(2) name!: string;
+  @IsOptional() @IsString() description?: string | null;
+  @IsOptional() @IsInt() sortOrder?: number;
+}
+
+class UpdateModuleDto {
+  @IsOptional() @IsString() @MinLength(2) name?: string;
+  @IsOptional() @IsString() description?: string | null;
+  @IsOptional() @IsInt() sortOrder?: number;
+  @IsOptional() @IsBoolean() isActive?: boolean;
+}
+
+class CreateFeatureDto {
+  @IsInt() moduleId!: number;
+  @IsString() @MinLength(2) key!: string;
+  @IsString() @MinLength(2) name!: string;
+  @IsOptional() @IsString() description?: string | null;
+  @IsOptional() @IsString() dependsOnFeatureKey?: string | null;
+  @IsOptional() @IsNumber() sortOrder?: number;
+}
+
+class UpdateFeatureDto {
+  @IsOptional() @IsString() @MinLength(2) name?: string;
+  @IsOptional() @IsString() description?: string | null;
+  @IsOptional() @IsString() dependsOnFeatureKey?: string | null;
+  @IsOptional() @IsInt() sortOrder?: number;
+  @IsOptional() @IsBoolean() isActive?: boolean;
 }
 
 class SupportRequestDto {
@@ -59,8 +136,86 @@ export class PlatformCatalogController {
 
   @Get('catalog')
   @RequirePlatformAdmin()
-  catalog() {
-    return this.entitlements.listCatalog();
+  catalog(@Query('includeInactive') includeInactive?: string) {
+    return this.entitlements.listCatalog({
+      includeInactive: includeInactive === '1' || includeInactive === 'true',
+    });
+  }
+
+  @Post('catalog/modules')
+  @RequirePlatformAdmin()
+  @ApiOperation({ summary: 'Create catalog module' })
+  async createModule(
+    @Body() dto: CreateModuleDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    const result = await this.entitlements.createModule(dto);
+    await this.audit.log({
+      actorUserId: user.userId,
+      actorEmail: user.email,
+      action: 'catalog.module.created',
+      resourceType: 'platform_module',
+      resourceId: result.id,
+      metadata: { key: result.key },
+    });
+    return result;
+  }
+
+  @Patch('catalog/modules/:id')
+  @RequirePlatformAdmin()
+  async updateModule(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateModuleDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    const result = await this.entitlements.updateModule(id, dto);
+    await this.audit.log({
+      actorUserId: user.userId,
+      actorEmail: user.email,
+      action: 'catalog.module.updated',
+      resourceType: 'platform_module',
+      resourceId: id,
+      metadata: dto as unknown as Record<string, unknown>,
+    });
+    return result;
+  }
+
+  @Post('catalog/features')
+  @RequirePlatformAdmin()
+  @ApiOperation({ summary: 'Create catalog feature' })
+  async createFeature(
+    @Body() dto: CreateFeatureDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    const result = await this.entitlements.createFeature(dto);
+    await this.audit.log({
+      actorUserId: user.userId,
+      actorEmail: user.email,
+      action: 'catalog.feature.created',
+      resourceType: 'platform_feature',
+      resourceId: result.id,
+      metadata: { key: result.key, moduleId: dto.moduleId },
+    });
+    return result;
+  }
+
+  @Patch('catalog/features/:id')
+  @RequirePlatformAdmin()
+  async updateFeature(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateFeatureDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    const result = await this.entitlements.updateFeature(id, dto);
+    await this.audit.log({
+      actorUserId: user.userId,
+      actorEmail: user.email,
+      action: 'catalog.feature.updated',
+      resourceType: 'platform_feature',
+      resourceId: id,
+      metadata: dto as unknown as Record<string, unknown>,
+    });
+    return result;
   }
 
   @Public()
@@ -86,6 +241,7 @@ export class PlatformCatalogController {
 
   @Patch('entitlements/:tenantId')
   @RequirePlatformAdmin()
+  @ApiOperation({ summary: 'Enable/disable features for a tenant' })
   async setEntitlements(
     @Param('tenantId', ParseIntPipe) tenantId: number,
     @Body() dto: SetFeaturesDto,
@@ -102,15 +258,82 @@ export class PlatformCatalogController {
       resourceType: 'tenant',
       resourceId: tenantId,
       tenantId,
-      metadata: { featureKeys: dto.featureKeys },
+      metadata: {
+        featureKeys: dto.featureKeys,
+        enabled: result.enabled,
+        disabled: result.disabled,
+      },
     });
     return result;
   }
 
   @Get('plans')
   @RequirePlatformAdmin()
-  plans() {
-    return this.entitlements.listPlans();
+  plans(@Query('includeInactive') includeInactive?: string) {
+    return this.entitlements.listPlans({
+      includeInactive: includeInactive === '1' || includeInactive === 'true',
+    });
+  }
+
+  @Get('plans/:id')
+  @RequirePlatformAdmin()
+  plan(@Param('id', ParseIntPipe) id: number) {
+    return this.entitlements.getPlan(id);
+  }
+
+  @Post('plans')
+  @RequirePlatformAdmin()
+  @ApiOperation({ summary: 'Create a subscription plan' })
+  async createPlan(@Body() dto: CreatePlanDto, @CurrentUser() user: AuthUser) {
+    const result = await this.entitlements.createPlan(dto);
+    await this.audit.log({
+      actorUserId: user.userId,
+      actorEmail: user.email,
+      action: 'plan.created',
+      resourceType: 'plan',
+      resourceId: result.id,
+      metadata: { slug: result.slug, featureKeys: result.featureKeys },
+    });
+    return result;
+  }
+
+  @Patch('plans/:id')
+  @RequirePlatformAdmin()
+  @ApiOperation({ summary: 'Update a subscription plan' })
+  async updatePlan(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdatePlanDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    const result = await this.entitlements.updatePlan(id, dto);
+    await this.audit.log({
+      actorUserId: user.userId,
+      actorEmail: user.email,
+      action: 'plan.updated',
+      resourceType: 'plan',
+      resourceId: id,
+      metadata: dto as unknown as Record<string, unknown>,
+    });
+    return result;
+  }
+
+  @Delete('plans/:id')
+  @RequirePlatformAdmin()
+  @ApiOperation({ summary: 'Delete or deactivate a plan' })
+  async deletePlan(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthUser,
+  ) {
+    const result = await this.entitlements.deletePlan(id);
+    await this.audit.log({
+      actorUserId: user.userId,
+      actorEmail: user.email,
+      action: 'plan.deleted',
+      resourceType: 'plan',
+      resourceId: id,
+      metadata: { status: result.status },
+    });
+    return result;
   }
 
   @Get('subscriptions')

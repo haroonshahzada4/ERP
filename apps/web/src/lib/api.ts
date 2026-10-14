@@ -1,65 +1,65 @@
+import { getSessionStore, type AuthSession } from './sessionStore';
 import { resolveTenantHost } from './tenantHost';
+
+export type { AuthSession } from './sessionStore';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api/v1';
 
-export type AuthSession = {
-  accessToken: string;
-  refreshToken: string;
-  user: { id: string; email: string; fullName: string };
-  tenant: { id: string; slug: string; host?: string; name?: string };
-  membershipId: string;
-  roles: string[];
-  permissions: string[];
-  isPlatformAdmin?: boolean;
-};
-
-const STORAGE_KEY = 'erp.auth';
-const TENANT_HOST_KEY = 'erp.tenantHost';
-
 /**
  * Host sent as X-Tenant-Host for the local Vite → API proxy.
- * Prefer the live subdomain; fall back to the session-bound host
- * (Platform Super Admin on localhost).
+ * Prefer the live subdomain; fall back to stored host only for tenant sessions.
+ * Platform sessions on apex must not invent a company host.
  */
 export function getTenantHost() {
-  return resolveTenantHost() || localStorage.getItem(TENANT_HOST_KEY) || '';
+  return resolveTenantHost() || getSessionStore().getTenantHost() || '';
 }
 
 export function setTenantHost(host: string) {
-  localStorage.setItem(TENANT_HOST_KEY, host);
+  getSessionStore().setTenantHost(host);
 }
 
 export function clearTenantHost() {
-  localStorage.removeItem(TENANT_HOST_KEY);
+  getSessionStore().clearTenantHost();
 }
 
 export function loadSession(): AuthSession | null {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as AuthSession;
-  } catch {
-    return null;
-  }
+  return getSessionStore().load();
 }
 
 export function saveSession(session: AuthSession | null) {
-  if (!session) {
-    localStorage.removeItem(STORAGE_KEY);
-    return;
-  }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
-  if (session.tenant.host) setTenantHost(session.tenant.host);
+  getSessionStore().save(session);
 }
+
+export type ApiErrorBody = {
+  statusCode?: number;
+  code?: string;
+  message?: string | string[];
+  requestId?: string;
+};
 
 async function parseError(response: Response) {
   try {
-    const body = (await response.json()) as { message?: string | string[] };
+    const body = (await response.json()) as ApiErrorBody;
     if (Array.isArray(body.message)) return body.message.join(', ');
-    return body.message ?? response.statusText;
+    if (body.message) {
+      return body.code ? `${body.message} (${body.code})` : body.message;
+    }
+    return response.statusText;
   } catch {
     return response.statusText;
   }
+}
+
+function shouldOmitTenantHost(path: string, session: AuthSession | null) {
+  if (path.startsWith('/auth/platform/')) return true;
+  if (session?.audience === 'platform' && path.startsWith('/platform/')) {
+    // Host-bound current/* still need a tenant host when intentionally set.
+    if (path.includes('/current/') || path.endsWith('/entitlements/current')) {
+      return false;
+    }
+    return true;
+  }
+  return false;
 }
 
 export async function apiRequest<T>(
@@ -72,7 +72,11 @@ export async function apiRequest<T>(
   headers.set('Content-Type', 'application/json');
   if (token) headers.set('Authorization', `Bearer ${token}`);
 
-  const host = tenantHost !== undefined ? tenantHost : getTenantHost();
+  const session = loadSession();
+  let host: string | null | undefined = tenantHost;
+  if (host === undefined) {
+    host = shouldOmitTenantHost(path, session) ? '' : getTenantHost();
+  }
   if (host) headers.set('X-Tenant-Host', host);
 
   const response = await fetch(`${API_BASE}${path}`, {
@@ -144,4 +148,31 @@ export async function apiDelete<T>(
   tenantHost?: string | null,
 ) {
   return apiRequest<T>(path, { method: 'DELETE' }, token, tenantHost);
+}
+
+/** Download a binary response (export files). */
+export async function apiDownload(
+  path: string,
+  token?: string | null,
+  filenameFallback = 'download',
+) {
+  const headers = new Headers();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  const host = getTenantHost();
+  if (host) headers.set('X-Tenant-Host', host);
+
+  const response = await fetch(`${API_BASE}${path}`, { headers });
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get('Content-Disposition') ?? '';
+  const match = /filename="?([^"]+)"?/i.exec(disposition);
+  const filename = match?.[1] ?? filenameFallback;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }

@@ -9,11 +9,11 @@ describe('RbacCacheService', () => {
       isPlatformAdmin: false,
     };
 
-    await cache.set('t1', 'u1', value);
-    await expect(cache.get('t1', 'u1')).resolves.toEqual(value);
+    await cache.set(1, 1, value);
+    await expect(cache.get(1, 1)).resolves.toEqual(value);
 
-    await cache.invalidateTenant('t1');
-    await expect(cache.get('t1', 'u1')).resolves.toBeNull();
+    await cache.invalidateTenant(1);
+    await expect(cache.get(1, 1)).resolves.toBeNull();
   });
 
   it('uses redis when available and bumps version on invalidate', async () => {
@@ -32,15 +32,15 @@ describe('RbacCacheService', () => {
     };
 
     const cache = new RbacCacheService(redis as never);
-    await cache.set('t1', 'u1', {
+    await cache.set(1, 1, {
       roles: ['hr_manager'],
       permissions: [],
       isPlatformAdmin: false,
     });
     expect(redis.set).toHaveBeenCalled();
 
-    await cache.invalidateTenant('t1');
-    expect(redis.incr).toHaveBeenCalledWith('rbac:ver:t1');
-    await expect(cache.get('t1', 'u1')).resolves.toBeNull();
+    await cache.invalidateTenant(1);
+    expect(redis.incr).toHaveBeenCalledWith('rbac:ver:1');
+    await expect(cache.get(1, 1)).resolves.toBeNull();
   });
 });

@@ -149,6 +149,37 @@ describe('TenantResolverMiddleware security', () => {
     expect(next).toHaveBeenCalled();
   });
 
+  it('skips tenant resolution for apex platform admin APIs', async () => {
+    const next = jest.fn();
+    await middleware.use(
+      {
+        headers: {},
+        query: {},
+        hostname: 'localhost',
+        originalUrl: '/api/v1/platform/tenants',
+      } as never,
+      {} as never,
+      next,
+    );
+    expect(domains.findOne).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalled();
+  });
+
+  it('still requires host for platform current/* routes', async () => {
+    await expect(
+      middleware.use(
+        {
+          headers: {},
+          query: {},
+          hostname: 'localhost',
+          originalUrl: '/api/v1/platform/tenants/current/branding',
+        } as never,
+        {} as never,
+        jest.fn(),
+      ),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
   it('skips tenant resolution for health probes', async () => {
     const next = jest.fn();
     await middleware.use(

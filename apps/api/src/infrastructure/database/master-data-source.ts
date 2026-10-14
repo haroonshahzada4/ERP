@@ -5,6 +5,7 @@ import { InitMasterSchema1730000000000 } from './migrations/master/1730000000000
 import { InitAuthSchema1730000001000 } from './migrations/master/1730000001000-InitAuthSchema';
 import { AddTenantBranding1730000002000 } from './migrations/master/1730000002000-AddTenantBranding';
 import { InitPlatformCatalog1730000003000 } from './migrations/master/1730000003000-InitPlatformCatalog';
+import { TenantProvisioningError1730000004000 } from './migrations/master/1730000004000-TenantProvisioningError';
 
 export const masterDataSourceOptions: DataSourceOptions = {
   type: 'postgres',
@@ -21,6 +22,7 @@ export const masterDataSourceOptions: DataSourceOptions = {
     InitAuthSchema1730000001000,
     AddTenantBranding1730000002000,
     InitPlatformCatalog1730000003000,
+    TenantProvisioningError1730000004000,
   ],
 };
 

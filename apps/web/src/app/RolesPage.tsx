@@ -250,8 +250,8 @@ export function RolesPage() {
             </p>
             <h1 className="mt-2 text-3xl font-semibold tracking-tight">Roles & permissions</h1>
             <p className="mt-2 max-w-xl text-[var(--erp-muted)]">
-              Permissions are tenant-specific and dynamic. Company Admin has full company
-              access; HR, Manager, and Employee only get grants you assign.
+              System roles ship with sensible defaults. Company Admin has full company
+              access; tweak grants below or assign members to HR, Manager, and Employee.
             </p>
           </div>
           <button
@@ -270,6 +270,73 @@ export function RolesPage() {
           {error}
         </p>
       )}
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {roleList.map((role) => {
+          const memberCount = (members.data ?? []).filter((m) =>
+            m.roles.includes(role.key),
+          ).length;
+          const sampleMembers = (members.data ?? [])
+            .filter((m) => m.roles.includes(role.key))
+            .slice(0, 3);
+          const grantCount = role.fullAccess
+            ? 'All'
+            : String(role.permissions.length);
+          return (
+            <div
+              key={role.id}
+              className="erp-panel space-y-3 p-4 transition hover:border-[var(--erp-line-hover)]"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="font-semibold">{role.name}</p>
+                  <p className="font-mono text-[11px] text-[var(--erp-muted)]">
+                    {role.key}
+                  </p>
+                </div>
+                {role.isSystem && (
+                  <span className="rounded-full bg-[var(--erp-accent-soft)] px-2 py-0.5 text-[10px] font-medium text-[var(--erp-accent)]">
+                    System
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-3 text-xs text-[var(--erp-muted)]">
+                <span>
+                  <span className="font-semibold text-[var(--erp-text)]">
+                    {grantCount}
+                  </span>{' '}
+                  permissions
+                </span>
+                <span>
+                  <span className="font-semibold text-[var(--erp-text)]">
+                    {memberCount}
+                  </span>{' '}
+                  members
+                </span>
+              </div>
+              {sampleMembers.length > 0 ? (
+                <ul className="space-y-1 border-t border-[var(--erp-line)] pt-3">
+                  {sampleMembers.map((m) => (
+                    <li key={m.membershipId} className="truncate text-xs">
+                      <span className="text-[var(--erp-text)]">{m.user.fullName}</span>
+                      <span className="text-[var(--erp-muted)]"> · {m.user.email}</span>
+                    </li>
+                  ))}
+                  {memberCount > sampleMembers.length && (
+                    <li className="text-[11px] text-[var(--erp-muted)]">
+                      +{memberCount - sampleMembers.length} more
+                    </li>
+                  )}
+                </ul>
+              ) : (
+                <p className="border-t border-[var(--erp-line)] pt-3 text-xs text-[var(--erp-muted)]">
+                  No members assigned yet
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
 
       {showCreate && (
         <div className="grid gap-4 lg:grid-cols-2">

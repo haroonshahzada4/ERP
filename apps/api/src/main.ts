@@ -5,6 +5,7 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
+import { ApiExceptionFilter } from './common/filters/api-exception.filter';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -30,10 +31,11 @@ async function bootstrap() {
       transform: true,
     }),
   );
+  app.useGlobalFilters(new ApiExceptionFilter());
 
   const swagger = new DocumentBuilder()
     .setTitle('ERP SaaS API')
-    .setDescription('Multi-tenant SaaS ERP — Phase 0 Foundation')
+    .setDescription('Multi-tenant SaaS ERP — Local-First Phase 0 Secure Boundaries')
     .setVersion('0.1.0')
     .addBearerAuth()
     .build();

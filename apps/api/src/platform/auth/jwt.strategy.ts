@@ -5,8 +5,13 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Request } from 'express';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { Repository } from 'typeorm';
-import { AuthUser } from '../../common/decorators/current-user.decorator';
+import {
+  AuthUser,
+  TokenAudience,
+} from '../../common/decorators/current-user.decorator';
 import { getTenantContext } from '../../common/tenant/tenant-context';
+import { PLATFORM_PERMISSION_KEYS, SUPER_ADMIN_ROLE } from '../../modules/access/system-roles';
+import { SupportAccessService } from '../catalog/support-access.service';
 import { Session } from './entities/session.entity';
 import {
   MembershipStatus,
@@ -18,9 +23,11 @@ import { RbacService } from './rbac.service';
 /** Slim access token — no roles/permissions embedded. */
 export type AccessPayload = {
   sub: number;
-  tid: number;
   sid: number;
   typ?: string;
+  aud?: TokenAudience;
+  /** Tenant tokens only. */
+  tid?: number;
 };
 
 @Injectable()
@@ -32,6 +39,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     @InjectRepository(TenantMembership)
     private readonly memberships: Repository<TenantMembership>,
     private readonly rbac: RbacService,
+    private readonly supportAccess: SupportAccessService,
   ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
@@ -45,25 +53,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (payload.typ !== 'access') {
       throw new UnauthorizedException('Invalid access token');
     }
-    if (!payload.sub || !payload.tid || !payload.sid) {
-      throw new UnauthorizedException('Invalid access token claims');
-    }
-
-    const tenant = getTenantContext();
-    if (!tenant) {
-      throw new UnauthorizedException('Tenant context required');
-    }
-
-    // JWT tenant must match host-resolved tenant (blocks cross-tenant token reuse).
-    const tid = Number(payload.tid);
-    const sid = Number(payload.sid);
+    const audience: TokenAudience =
+      payload.aud === 'platform' ? 'platform' : 'tenant';
     const sub = Number(payload.sub);
-    if (!Number.isFinite(tid) || !Number.isFinite(sid) || !Number.isFinite(sub)) {
+    const sid = Number(payload.sid);
+    if (!Number.isFinite(sub) || !Number.isFinite(sid)) {
       throw new UnauthorizedException('Invalid access token claims');
-    }
-
-    if (tid !== tenant.tenantId) {
-      throw new UnauthorizedException('Token tenant mismatch');
     }
 
     const session = await this.sessions.findOne({
@@ -78,7 +73,84 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('User inactive');
     }
 
-    // Always re-check active membership in Master DB for the resolved tenant.
+    if (audience === 'platform') {
+      return this.validatePlatform(user, session.id);
+    }
+
+    return this.validateTenant(user, session.id, payload);
+  }
+
+  private async validatePlatform(
+    user: User,
+    sessionId: number,
+  ): Promise<AuthUser> {
+    if (!user.isPlatformAdmin) {
+      throw new UnauthorizedException('Platform admin required');
+    }
+
+    const tenant = getTenantContext();
+    if (!tenant) {
+      return {
+        userId: user.id,
+        sessionId,
+        audience: 'platform',
+        tenantId: null,
+        membershipId: null,
+        email: user.email,
+        fullName: user.fullName,
+        roles: [SUPER_ADMIN_ROLE],
+        permissions: [...PLATFORM_PERMISSION_KEYS],
+        isPlatformAdmin: true,
+      };
+    }
+
+    // Platform token on a tenant host — only support grant unlocks tenant perms.
+    const grant = await this.supportAccess.getActiveGrant(
+      user.id,
+      tenant.tenantId,
+    );
+    const base = [...PLATFORM_PERMISSION_KEYS];
+    const permissions = grant
+      ? [...new Set([...base, ...grant.permissionKeys])]
+      : base;
+
+    return {
+      userId: user.id,
+      sessionId,
+      audience: 'platform',
+      tenantId: tenant.tenantId,
+      membershipId: null,
+      email: user.email,
+      fullName: user.fullName,
+      roles: [SUPER_ADMIN_ROLE],
+      permissions,
+      isPlatformAdmin: true,
+    };
+  }
+
+  private async validateTenant(
+    user: User,
+    sessionId: number,
+    payload: AccessPayload,
+  ): Promise<AuthUser> {
+    if (!payload.tid) {
+      throw new UnauthorizedException('Invalid access token claims');
+    }
+
+    const tenant = getTenantContext();
+    if (!tenant) {
+      throw new UnauthorizedException('Tenant context required');
+    }
+
+    const tid = Number(payload.tid);
+    if (!Number.isFinite(tid)) {
+      throw new UnauthorizedException('Invalid access token claims');
+    }
+
+    if (tid !== tenant.tenantId) {
+      throw new UnauthorizedException('Token tenant mismatch');
+    }
+
     const membership = await this.memberships.findOne({
       where: {
         userId: user.id,
@@ -99,7 +171,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
     return {
       userId: user.id,
-      sessionId: session.id,
+      sessionId,
+      audience: 'tenant',
       tenantId: tenant.tenantId,
       membershipId: membership.id,
       email: user.email,

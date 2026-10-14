@@ -18,10 +18,10 @@ export function useTenantBranding() {
   const { setBranding } = useTheme();
 
   const query = useQuery({
-    queryKey: ['tenant-branding', session?.tenant.slug],
+    queryKey: ['tenant-branding', session?.tenant?.slug],
     queryFn: () =>
       apiGet<TenantBranding>('/platform/tenants/current/branding', session?.accessToken),
-    enabled: !!session,
+    enabled: !!session && session.audience !== 'platform' && !!session.tenant,
     staleTime: 5 * 60_000,
   });
 

@@ -37,6 +37,10 @@ export class TenantProvisionerService {
     private readonly tenantConnections: TenantConnectionManager,
   ) {}
 
+  /**
+   * Synchronous local provisioning with safe failure:
+   * never marks ACTIVE if migrate/seed fails; stores lastError for retry.
+   */
   async provision(input: ProvisionTenantInput) {
     const slug = input.slug.trim().toLowerCase();
     if (!/^[a-z0-9-]+$/.test(slug)) {
@@ -50,8 +54,6 @@ export class TenantProvisionerService {
     const dbUser = this.config.getOrThrow<string>('masterDb.username');
     const dbPassword = this.config.getOrThrow<string>('masterDb.password');
 
-    await this.ensureDatabaseExists(dbName);
-
     let tenant = await this.tenants.findOne({ where: { slug } });
     if (!tenant) {
       tenant = await this.tenants.save(
@@ -64,6 +66,7 @@ export class TenantProvisionerService {
           brandPrimary: input.brandPrimary ?? '#1ecf8a',
           brandSecondary: input.brandSecondary ?? '#149a66',
           themeMode: input.themeMode ?? 'dark',
+          lastError: null,
         }),
       );
     } else {
@@ -72,79 +75,118 @@ export class TenantProvisionerService {
       if (input.brandSecondary) tenant.brandSecondary = input.brandSecondary;
       if (input.themeMode) tenant.themeMode = input.themeMode;
       if (input.logoUrl !== undefined) tenant.logoUrl = input.logoUrl;
+      tenant.status = TenantStatus.PROVISIONING;
+      tenant.lastError = null;
       tenant = await this.tenants.save(tenant);
     }
 
-    if (!(await this.domains.findOne({ where: { host } }))) {
-      await this.domains.save(
-        this.domains.create({
-          tenantId: tenant.id,
-          host,
-          isPrimary: true,
-          isVerified: true,
-        }),
-      );
-    }
+    try {
+      await this.ensureDatabaseExists(dbName);
 
-    let dbMeta = await this.databases.findOne({ where: { tenantId: tenant.id } });
-    if (!dbMeta) {
-      dbMeta = await this.databases.save(
-        this.databases.create({
-          tenantId: tenant.id,
-          dbName,
-          dbHost,
-          dbPort,
-          dbUser,
-          dbPassword,
-          schemaVersion: '0.1.0',
-        }),
-      );
-    } else {
-      dbMeta.dbPassword = dbPassword;
-      dbMeta.dbUser = dbUser;
-      dbMeta.dbHost = dbHost;
-      dbMeta.dbPort = dbPort;
-      dbMeta = await this.databases.save(dbMeta);
-    }
+      if (!(await this.domains.findOne({ where: { host } }))) {
+        await this.domains.save(
+          this.domains.create({
+            tenantId: tenant.id,
+            host,
+            isPrimary: true,
+            isVerified: true,
+          }),
+        );
+      }
 
-    const tenantDs = await this.tenantConnections.getOrCreate(tenant.id, {
-      host: dbMeta.dbHost,
-      port: dbMeta.dbPort,
-      username: dbMeta.dbUser,
-      password: dbMeta.dbPassword,
-      database: dbMeta.dbName,
-      logging: this.config.get<boolean>('typeorm.logging'),
+      let dbMeta = await this.databases.findOne({
+        where: { tenantId: tenant.id },
+      });
+      if (!dbMeta) {
+        dbMeta = await this.databases.save(
+          this.databases.create({
+            tenantId: tenant.id,
+            dbName,
+            dbHost,
+            dbPort,
+            dbUser,
+            dbPassword,
+            schemaVersion: '0.1.0',
+          }),
+        );
+      } else {
+        dbMeta.dbPassword = dbPassword;
+        dbMeta.dbUser = dbUser;
+        dbMeta.dbHost = dbHost;
+        dbMeta.dbPort = dbPort;
+        dbMeta = await this.databases.save(dbMeta);
+      }
+
+      const tenantDs = await this.tenantConnections.getOrCreate(tenant.id, {
+        host: dbMeta.dbHost,
+        port: dbMeta.dbPort,
+        username: dbMeta.dbUser,
+        password: dbMeta.dbPassword,
+        database: dbMeta.dbName,
+        logging: this.config.get<boolean>('typeorm.logging'),
+      });
+
+      if (this.config.get<boolean>('typeorm.runMigrations')) {
+        await tenantDs.runMigrations();
+      }
+
+      await seedTenantData(this.masterDs, tenantDs, {
+        tenantId: tenant.id,
+        adminEmail: input.adminEmail ?? `admin@${slug}.com`,
+        adminPassword:
+          input.adminPassword ??
+          this.config.get<string>('demoTenant.adminPassword') ??
+          'admin',
+        companyName: input.name,
+        brandPrimary: tenant.brandPrimary,
+        brandSecondary: tenant.brandSecondary,
+        themeMode: tenant.themeMode,
+        logoUrl: tenant.logoUrl,
+        seedEmployees: input.seedEmployees ?? slug === 'demo',
+        seedSuperAdmin: false,
+      });
+
+      tenant.status = TenantStatus.ACTIVE;
+      tenant.lastError = null;
+      tenant = await this.tenants.save(tenant);
+
+      this.logger.log(`Tenant ready: ${slug} / ${dbName}`);
+      return this.tenants.findOneOrFail({
+        where: { id: tenant.id },
+        relations: { domains: true, databases: true },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Provisioning failed for ${slug}: ${message}`);
+      tenant.status = TenantStatus.FAILED;
+      tenant.lastError = message.slice(0, 2000);
+      await this.tenants.save(tenant);
+      throw err;
+    }
+  }
+
+  /** Retry a failed/partial provision using stored tenant metadata. */
+  async retry(tenantId: number) {
+    const tenant = await this.tenants.findOne({
+      where: { id: tenantId },
+      relations: { domains: true },
     });
-
-    if (this.config.get<boolean>('typeorm.runMigrations')) {
-      await tenantDs.runMigrations();
+    if (!tenant) {
+      throw new BadRequestException('Tenant not found');
     }
-
-    await seedTenantData(this.masterDs, tenantDs, {
-      tenantId: tenant.id,
-      adminEmail: input.adminEmail ?? `admin@${slug}.com`,
-      adminPassword:
-        input.adminPassword ??
-        this.config.get<string>('demoTenant.adminPassword') ??
-        'admin',
-      companyName: input.name,
+    const host =
+      tenant.domains.find((d) => d.isPrimary)?.host ??
+      tenant.domains[0]?.host ??
+      `${tenant.slug}.localhost`;
+    return this.provision({
+      slug: tenant.slug,
+      name: tenant.name,
+      host,
       brandPrimary: tenant.brandPrimary,
       brandSecondary: tenant.brandSecondary,
       themeMode: tenant.themeMode,
       logoUrl: tenant.logoUrl,
-      seedEmployees: input.seedEmployees ?? slug === 'demo',
-      seedSuperAdmin: true,
-    });
-
-    if (tenant.status !== TenantStatus.ACTIVE) {
-      tenant.status = TenantStatus.ACTIVE;
-      tenant = await this.tenants.save(tenant);
-    }
-
-    this.logger.log(`Tenant ready: ${slug} / ${dbName}`);
-    return this.tenants.findOneOrFail({
-      where: { id: tenant.id },
-      relations: { domains: true, databases: true },
+      seedEmployees: tenant.slug === 'demo',
     });
   }
 

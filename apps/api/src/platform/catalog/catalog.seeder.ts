@@ -84,29 +84,23 @@ export class CatalogSeeder {
   }
 
   private async seedPlans() {
+    // Only create missing default plans. Never overwrite Super Admin edits.
     for (const [i, def] of PLAN_DEFINITIONS.entries()) {
-      let plan = await this.plans.findOne({ where: { slug: def.slug } });
-      if (!plan) {
-        plan = await this.plans.save(
-          this.plans.create({
-            slug: def.slug,
-            name: def.name,
-            description: def.description,
-            priceMonthlyCents: def.priceMonthlyCents,
-            currency: 'USD',
-            isActive: true,
-            sortOrder: i,
-          }),
-        );
-      } else {
-        plan.name = def.name;
-        plan.description = def.description;
-        plan.priceMonthlyCents = def.priceMonthlyCents;
-        plan.sortOrder = i;
-        await this.plans.save(plan);
-      }
+      const existing = await this.plans.findOne({ where: { slug: def.slug } });
+      if (existing) continue;
 
-      await this.planFeatures.delete({ planId: plan.id });
+      const plan = await this.plans.save(
+        this.plans.create({
+          slug: def.slug,
+          name: def.name,
+          description: def.description,
+          priceMonthlyCents: def.priceMonthlyCents,
+          currency: 'USD',
+          isActive: true,
+          sortOrder: i,
+        }),
+      );
+
       for (const key of def.featureKeys) {
         const feature = await this.features.findOne({ where: { key } });
         if (!feature) continue;
@@ -115,7 +109,7 @@ export class CatalogSeeder {
         );
       }
     }
-    this.logger.log('Plans seeded');
+    this.logger.log('Plans seeded (defaults only; existing plans preserved)');
   }
 
   private async seedTenantSubscriptions() {

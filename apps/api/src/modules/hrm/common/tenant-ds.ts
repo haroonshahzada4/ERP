@@ -32,6 +32,7 @@ export function canApproveAttendance(user: {
 }) {
   return (
     user.permissions.includes('attendance.approve') ||
+    user.permissions.includes('attendance.update') ||
     user.permissions.includes('tenant:*')
   );
 }

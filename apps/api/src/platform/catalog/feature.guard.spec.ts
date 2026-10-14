@@ -26,7 +26,11 @@ describe('FeatureGuard', () => {
     );
   });
 
-  function ctx(user?: { isPlatformAdmin?: boolean; userId?: number }) {
+  function ctx(user?: {
+    isPlatformAdmin?: boolean;
+    userId?: number;
+    audience?: 'platform' | 'tenant';
+  }) {
     return {
       getHandler: () => ({}),
       getClass: () => ({}),
@@ -54,16 +58,16 @@ describe('FeatureGuard', () => {
     // When no tenant context, guard returns true early. Simulate with spy on module.
     const tenantContext = await import('../../common/tenant/tenant-context');
     jest.spyOn(tenantContext, 'getTenantContext').mockReturnValue({
-      tenantId: 't1',
+      tenantId: 1,
       tenantSlug: 'demo',
       host: 'demo.localhost',
     });
 
     entitlements.assertFeatures.mockResolvedValue(undefined);
     await expect(
-      guard.canActivate(ctx({ isPlatformAdmin: false, userId: 'u1' })),
+      guard.canActivate(ctx({ isPlatformAdmin: false, userId: 1 })),
     ).resolves.toBe(true);
-    expect(entitlements.assertFeatures).toHaveBeenCalledWith('t1', [
+    expect(entitlements.assertFeatures).toHaveBeenCalledWith(1, [
       'hrm.payroll',
     ]);
   });
@@ -75,7 +79,7 @@ describe('FeatureGuard', () => {
     });
     const tenantContext = await import('../../common/tenant/tenant-context');
     jest.spyOn(tenantContext, 'getTenantContext').mockReturnValue({
-      tenantId: 't1',
+      tenantId: 1,
       tenantSlug: 'horizon',
       host: 'horizon.localhost',
     });
@@ -85,7 +89,7 @@ describe('FeatureGuard', () => {
     supportAccess.getActiveGrant.mockResolvedValue(null);
 
     await expect(
-      guard.canActivate(ctx({ isPlatformAdmin: false, userId: 'u1' })),
+      guard.canActivate(ctx({ isPlatformAdmin: false, userId: 1 })),
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
@@ -96,7 +100,7 @@ describe('FeatureGuard', () => {
     });
     const tenantContext = await import('../../common/tenant/tenant-context');
     jest.spyOn(tenantContext, 'getTenantContext').mockReturnValue({
-      tenantId: 't1',
+      tenantId: 1,
       tenantSlug: 'demo',
       host: 'demo.localhost',
     });
@@ -105,8 +109,31 @@ describe('FeatureGuard', () => {
     });
 
     await expect(
-      guard.canActivate(ctx({ isPlatformAdmin: true, userId: 'sa' })),
+      guard.canActivate(
+        ctx({ isPlatformAdmin: true, userId: 99, audience: 'platform' }),
+      ),
     ).resolves.toBe(true);
     expect(entitlements.assertFeatures).not.toHaveBeenCalled();
   });
+
+  it('blocks Super Admin without support grant', async () => {
+    reflector.getAllAndOverride.mockImplementation((key: string) => {
+      if (key === FEATURES_KEY) return ['hrm.employees'];
+      return false;
+    });
+    const tenantContext = await import('../../common/tenant/tenant-context');
+    jest.spyOn(tenantContext, 'getTenantContext').mockReturnValue({
+      tenantId: 1,
+      tenantSlug: 'demo',
+      host: 'demo.localhost',
+    });
+    supportAccess.getActiveGrant.mockResolvedValue(null);
+
+    await expect(
+      guard.canActivate(
+        ctx({ isPlatformAdmin: true, userId: 99, audience: 'platform' }),
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
 });
+

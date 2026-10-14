@@ -94,4 +94,36 @@ export class TenantsController {
   remove(@Param('id', ParseIntPipe) id: number) {
     return this.tenantsService.remove(id);
   }
+
+  @Post(':id/suspend')
+  @ApiBearerAuth()
+  @RequirePlatformAdmin()
+  @ApiOperation({ summary: 'Suspend tenant (blocks host resolution)' })
+  suspend(@Param('id', ParseIntPipe) id: number) {
+    return this.tenantsService.suspend(id);
+  }
+
+  @Post(':id/activate')
+  @ApiBearerAuth()
+  @RequirePlatformAdmin()
+  @ApiOperation({ summary: 'Activate a provisioned tenant' })
+  activate(@Param('id', ParseIntPipe) id: number) {
+    return this.tenantsService.activate(id);
+  }
+
+  @Post(':id/retry')
+  @ApiBearerAuth()
+  @RequirePlatformAdmin()
+  @ApiOperation({ summary: 'Retry failed provisioning' })
+  retry(@Param('id', ParseIntPipe) id: number) {
+    return this.tenantsService.retryProvision(id);
+  }
+
+  @Get(':id/provisioning')
+  @ApiBearerAuth()
+  @RequirePlatformAdmin()
+  @ApiOperation({ summary: 'Provisioning status + last error' })
+  provisioning(@Param('id', ParseIntPipe) id: number) {
+    return this.tenantsService.getProvisioningStatus(id);
+  }
 }

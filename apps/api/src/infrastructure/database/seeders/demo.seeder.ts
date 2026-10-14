@@ -8,7 +8,11 @@ import { RolePermission } from '../../../modules/access/entities/role-permission
 import { Role } from '../../../modules/access/entities/role.entity';
 import {
   COMPANY_ADMIN_ROLE,
+  EMPLOYEE_ROLE,
+  HR_MANAGER_ROLE,
   LEGACY_TENANT_ADMIN_ROLE,
+  MANAGER_ROLE,
+  SYSTEM_ROLE_DEFAULT_PERMISSIONS,
   TENANT_SYSTEM_ROLES,
 } from '../../../modules/access/system-roles';
 import { Holiday } from '../../../modules/hrm/attendance/entities/holiday.entity';
@@ -18,6 +22,8 @@ import { EmployeeDocument } from '../../../modules/hrm/employees/entities/employ
 import { Employee } from '../../../modules/hrm/employees/entities/employee.entity';
 import { EmploymentHistory } from '../../../modules/hrm/employees/entities/employment-history.entity';
 import { LeaveType } from '../../../modules/hrm/leaves/entities/leave-type.entity';
+import { Compensation } from '../../../modules/hrm/payroll/entities/compensation.entity';
+import { TaxSlab } from '../../../modules/hrm/payroll/entities/tax-slab.entity';
 import { Branch } from '../../../modules/hrm/organization/entities/branch.entity';
 import { Department } from '../../../modules/hrm/organization/entities/department.entity';
 import { Designation } from '../../../modules/hrm/organization/entities/designation.entity';
@@ -69,8 +75,9 @@ export async function seedTenantData(
   await seedCompany(tenantDs, options);
   await seedRbac(tenantDs);
   const adminUser = await seedAdminUser(masterDs, options);
-  if (options.seedSuperAdmin !== false) {
-    await seedSuperAdminUser(masterDs, options);
+  // Legacy: only seed Super Admin user when explicitly requested; never grant membership.
+  if (options.seedSuperAdmin === true) {
+    await ensurePlatformSuperAdmin(masterDs, options.adminPassword);
   }
   const membership = await seedAdminMembership(
     masterDs,
@@ -79,10 +86,12 @@ export async function seedTenantData(
     adminUser,
   );
   const org = await seedOrganization(tenantDs);
+  await ensureDemoRoleUsers(tenantDs, masterDs, options.tenantId);
   if (options.seedEmployees !== false) {
     await seedEmployees(tenantDs, masterDs, options.tenantId, org, adminUser.id);
   }
   await seedAttendanceLeaveDefaults(tenantDs);
+  await seedPayrollDefaults(tenantDs);
 
   logger.log(
     `Tenant seed complete (membership=${membership.id}, company=${options.companyName ?? 'Demo'})`,
@@ -94,19 +103,26 @@ export const seedDemoData = seedTenantData;
 
 /**
  * Starter permission *definitions* for a new tenant library.
- * Not role grants — Company Admin assigns these to HR/Manager/Employee.
+ * System roles receive default grants via SYSTEM_ROLE_DEFAULT_PERMISSIONS.
  */
 const STARTER_PERMISSION_DEFINITIONS = [
   { key: 'employee.read', label: 'View employees' },
   { key: 'employee.write', label: 'Manage employees' },
+  { key: 'attendance.create', label: 'Check in / check out' },
   { key: 'attendance.read', label: 'View attendance' },
-  { key: 'attendance.approve', label: 'Approve attendance' },
+  { key: 'attendance.update', label: 'Edit attendance records' },
+  { key: 'attendance.import', label: 'Import attendance' },
+  { key: 'attendance.export', label: 'Export attendance' },
+  { key: 'attendance.report.read', label: 'View attendance reports' },
+  { key: 'attendance.approve', label: 'Approve attendance corrections' },
   { key: 'leave.read', label: 'View leave' },
   { key: 'leave.approve', label: 'Approve leave' },
   { key: 'payroll.view', label: 'View payroll' },
   { key: 'payroll.generate', label: 'Generate payroll' },
   { key: 'payroll.approve.hr', label: 'Approve payroll (HR)' },
   { key: 'payroll.approve.ceo', label: 'Approve payroll (CEO)' },
+  { key: 'recruitment.read', label: 'View recruitment' },
+  { key: 'recruitment.write', label: 'Manage recruitment' },
   { key: 'roles.manage', label: 'Manage roles' },
   { key: 'tenant.settings', label: 'Manage tenant settings' },
 ] as const;
@@ -169,7 +185,6 @@ async function seedRbac(tenantDs: DataSource) {
 
   for (const seed of TENANT_SYSTEM_ROLES) {
     let role = await roleRepo.findOne({ where: { key: seed.key } });
-    const isNew = !role;
     if (!role) {
       role = await roleRepo.save(
         roleRepo.create({
@@ -187,60 +202,48 @@ async function seedRbac(tenantDs: DataSource) {
     if (seed.key === COMPANY_ADMIN_ROLE) {
       // Scope-based full access — do not store grant rows.
       await rpRepo.delete({ roleId: role.id });
-      continue;
-    }
-
-    // New HR / Manager / Employee roles start with zero grants.
-    // Existing custom grants assigned by Company Admin are preserved.
-    if (isNew) {
-      await rpRepo.delete({ roleId: role.id });
     }
   }
 
-  // One-time strip of previously hardcoded default grants (legacy catalog seeds).
-  await stripLegacyDefaultGrants(tenantDs);
+  await ensureSystemRoleDefaultGrants(tenantDs);
 }
 
-async function stripLegacyDefaultGrants(tenantDs: DataSource) {
+/** Sync default permission grants onto HR / Manager / Employee system roles. */
+async function ensureSystemRoleDefaultGrants(tenantDs: DataSource) {
+  const permissionRepo = tenantDs.getRepository(Permission);
   const roleRepo = tenantDs.getRepository(Role);
   const rpRepo = tenantDs.getRepository(RolePermission);
 
-  const legacyEmployeeKeys = [
-    'employee.read',
-    'attendance.read',
-    'leave.read',
-  ];
-  const legacyHrKeys = [
-    'employee.read',
-    'employee.write',
-    'attendance.read',
-    'attendance.approve',
-    'leave.read',
-    'leave.approve',
-    'payroll.view',
-    'payroll.generate',
-    'payroll.approve.hr',
-    'roles.manage',
-    'tenant.settings',
-  ];
-
-  async function clearIfExactLegacy(roleKey: string, keys: string[]) {
+  for (const [roleKey, permKeys] of Object.entries(
+    SYSTEM_ROLE_DEFAULT_PERMISSIONS,
+  )) {
     const role = await roleRepo.findOne({ where: { key: roleKey } });
-    if (!role) return;
-    const links = await rpRepo.find({
+    if (!role) continue;
+
+    const desired = new Set(permKeys);
+    const existing = await rpRepo.find({
       where: { roleId: role.id },
       relations: { permission: true },
     });
-    if (links.length === 0) return;
-    const current = new Set(links.map((l) => l.permission.key));
-    if (current.size !== keys.length) return;
-    if (!keys.every((k) => current.has(k))) return;
-    await rpRepo.remove(links);
-    logger.log(`Cleared legacy default grants from role ${roleKey}`);
+    const have = new Set(existing.map((l) => l.permission.key));
+
+    for (const link of existing) {
+      if (!desired.has(link.permission.key)) {
+        await rpRepo.remove(link);
+      }
+    }
+
+    for (const key of desired) {
+      if (have.has(key)) continue;
+      const perm = await permissionRepo.findOne({ where: { key } });
+      if (!perm) continue;
+      await rpRepo.save(
+        rpRepo.create({ roleId: role.id, permissionId: perm.id }),
+      );
+    }
   }
 
-  await clearIfExactLegacy('employee', legacyEmployeeKeys);
-  await clearIfExactLegacy('hr_manager', legacyHrKeys);
+  logger.log('System role default permissions synced (HR / Manager / Employee)');
 }
 
 async function seedAdminUser(masterDs: DataSource, options: DemoSeederOptions) {
@@ -269,14 +272,18 @@ async function seedAdminUser(masterDs: DataSource, options: DemoSeederOptions) {
   return user;
 }
 
-async function seedSuperAdminUser(
+/**
+ * Ensure Platform Super Admin exists with isPlatformAdmin=true and
+ * **no** tenant memberships (support grants are the only path into tenant data).
+ */
+export async function ensurePlatformSuperAdmin(
   masterDs: DataSource,
-  options: DemoSeederOptions,
+  adminPassword: string,
 ) {
   const userRepo = masterDs.getRepository(User);
   const membershipRepo = masterDs.getRepository(TenantMembership);
   const email = 'superadmin@demo.com';
-  const passwordHash = await bcrypt.hash(options.adminPassword, 10);
+  const passwordHash = await bcrypt.hash(adminPassword, 10);
 
   let user = await userRepo.findOne({ where: { email } });
   if (!user) {
@@ -296,20 +303,13 @@ async function seedSuperAdminUser(
     user = await userRepo.save(user);
   }
 
-  let membership = await membershipRepo.findOne({
-    where: { userId: user.id, tenantId: options.tenantId },
-  });
-  if (!membership) {
-    await membershipRepo.save(
-      membershipRepo.create({
-        userId: user.id,
-        tenantId: options.tenantId,
-        status: MembershipStatus.ACTIVE,
-      }),
-    );
-  } else if (membership.status !== MembershipStatus.ACTIVE) {
-    membership.status = MembershipStatus.ACTIVE;
-    await membershipRepo.save(membership);
+  // Revoke any legacy auto-memberships from earlier seeds.
+  const memberships = await membershipRepo.find({ where: { userId: user.id } });
+  for (const m of memberships) {
+    if (m.status !== MembershipStatus.REVOKED) {
+      m.status = MembershipStatus.REVOKED;
+      await membershipRepo.save(m);
+    }
   }
 
   return user;
@@ -515,6 +515,110 @@ async function seedOrganization(tenantDs: DataSource) {
   };
 }
 
+/**
+ * Demo logins for each system role (idempotent — safe on every boot).
+ * Password for all: admin
+ */
+async function ensureDemoRoleUsers(
+  tenantDs: DataSource,
+  masterDs: DataSource,
+  tenantId: number,
+) {
+  const userRepo = masterDs.getRepository(User);
+  const membershipRepo = masterDs.getRepository(TenantMembership);
+  const roleRepo = tenantDs.getRepository(Role);
+  const mrRepo = tenantDs.getRepository(MembershipRole);
+  const employeeRepo = tenantDs.getRepository(Employee);
+  const passwordHash = await bcrypt.hash('admin', 10);
+
+  const demos: Array<{
+    email: string;
+    fullName: string;
+    roleKey: string;
+    employeeEmail?: string;
+  }> = [
+    {
+      email: 'aisha.khan@demo.com',
+      fullName: 'Aisha Khan',
+      roleKey: HR_MANAGER_ROLE,
+      employeeEmail: 'aisha.khan@demo.com',
+    },
+    {
+      email: 'sara.malik@demo.com',
+      fullName: 'Sara Malik',
+      roleKey: MANAGER_ROLE,
+      employeeEmail: 'sara.malik@demo.com',
+    },
+    {
+      email: 'bilal.ahmed@demo.com',
+      fullName: 'Bilal Ahmed',
+      roleKey: EMPLOYEE_ROLE,
+      employeeEmail: 'bilal.ahmed@demo.com',
+    },
+  ];
+
+  for (const demo of demos) {
+    const role = await roleRepo.findOne({ where: { key: demo.roleKey } });
+    let user = await userRepo.findOne({ where: { email: demo.email } });
+    if (!user) {
+      user = await userRepo.save(
+        userRepo.create({
+          email: demo.email,
+          fullName: demo.fullName,
+          passwordHash,
+          isActive: true,
+          isPlatformAdmin: false,
+        }),
+      );
+    }
+
+    let membership = await membershipRepo.findOne({
+      where: { userId: user.id, tenantId },
+    });
+    if (!membership) {
+      membership = await membershipRepo.save(
+        membershipRepo.create({
+          userId: user.id,
+          tenantId,
+          status: MembershipStatus.ACTIVE,
+        }),
+      );
+    } else if (membership.status !== MembershipStatus.ACTIVE) {
+      membership.status = MembershipStatus.ACTIVE;
+      await membershipRepo.save(membership);
+    }
+
+    if (role) {
+      const existing = await mrRepo.findOne({
+        where: { membershipId: membership.id, roleId: role.id },
+      });
+      if (!existing) {
+        await mrRepo.save(
+          mrRepo.create({
+            membershipId: membership.id,
+            userId: user.id,
+            roleId: role.id,
+          }),
+        );
+      }
+    }
+
+    if (demo.employeeEmail) {
+      const emp = await employeeRepo.findOne({
+        where: { email: demo.employeeEmail },
+      });
+      if (emp && emp.userId !== user.id) {
+        emp.userId = user.id;
+        await employeeRepo.save(emp);
+      }
+    }
+  }
+
+  logger.log(
+    'Demo role users ready: aisha (HR), sara (Manager), bilal (Employee)',
+  );
+}
+
 async function seedEmployees(
   tenantDs: DataSource,
   masterDs: DataSource,
@@ -531,20 +635,9 @@ async function seedEmployees(
   const historyRepo = tenantDs.getRepository(EmploymentHistory);
   const docRepo = tenantDs.getRepository(EmployeeDocument);
   const userRepo = masterDs.getRepository(User);
-  const membershipRepo = masterDs.getRepository(TenantMembership);
-  const roleRepo = tenantDs.getRepository(Role);
-  const mrRepo = tenantDs.getRepository(MembershipRole);
-
-  const hrRole = await roleRepo.findOne({ where: { key: 'hr_manager' } });
-  const empRole = await roleRepo.findOne({ where: { key: 'employee' } });
-
   const passwordHash = await bcrypt.hash('admin', 10);
 
-  async function ensureLinkedUser(
-    email: string,
-    fullName: string,
-    role: Role | null,
-  ) {
+  async function stubUser(email: string, fullName: string) {
     let user = await userRepo.findOne({ where: { email } });
     if (!user) {
       user = await userRepo.save(
@@ -557,45 +650,13 @@ async function seedEmployees(
         }),
       );
     }
-    let membership = await membershipRepo.findOne({
-      where: { userId: user.id, tenantId },
-    });
-    if (!membership) {
-      membership = await membershipRepo.save(
-        membershipRepo.create({
-          userId: user.id,
-          tenantId,
-          status: MembershipStatus.ACTIVE,
-        }),
-      );
-    }
-    if (role) {
-      const existing = await mrRepo.findOne({
-        where: { membershipId: membership.id, roleId: role.id },
-      });
-      if (!existing) {
-        await mrRepo.save(
-          mrRepo.create({
-            membershipId: membership.id,
-            userId: user.id,
-            roleId: role.id,
-          }),
-        );
-      }
-    }
     return user;
   }
 
-  const aishaUser = await ensureLinkedUser(
-    'aisha.khan@demo.com',
-    'Aisha Khan',
-    hrRole,
-  );
-  const bilalUser = await ensureLinkedUser(
-    'bilal.ahmed@demo.com',
-    'Bilal Ahmed',
-    empRole,
-  );
+  // ensureDemoRoleUsers (after this) assigns roles/memberships.
+  const aisha = await stubUser('aisha.khan@demo.com', 'Aisha Khan');
+  const bilal = await stubUser('bilal.ahmed@demo.com', 'Bilal Ahmed');
+  const sara = await stubUser('sara.malik@demo.com', 'Sara Malik');
 
   const ceoEmp = await employeeRepo.save(
     employeeRepo.create({
@@ -624,7 +685,7 @@ async function seedEmployees(
       lastName: 'Khan',
       email: 'aisha.khan@demo.com',
       phone: '+92-300-2222222',
-      userId: aishaUser.id,
+      userId: aisha.id,
       branchId: org.ho.id,
       departmentId: org.hr.id,
       designationId: org.hrMgr.id,
@@ -644,7 +705,7 @@ async function seedEmployees(
       lastName: 'Ahmed',
       email: 'bilal.ahmed@demo.com',
       phone: '+92-300-3333333',
-      userId: bilalUser.id,
+      userId: bilal.id,
       branchId: org.ho.id,
       departmentId: org.eng.id,
       designationId: org.engLead.id,
@@ -657,48 +718,45 @@ async function seedEmployees(
     }),
   );
 
-  const engineers = [
-    {
-      code: 'EMP-004',
-      first: 'Sara',
-      last: 'Malik',
+  await employeeRepo.save(
+    employeeRepo.create({
+      employeeCode: 'EMP-004',
+      firstName: 'Sara',
+      lastName: 'Malik',
       email: 'sara.malik@demo.com',
       phone: '+92-300-4444444',
-      salary: '160000.00',
+      userId: sara.id,
+      branchId: org.ho.id,
+      departmentId: org.eng.id,
+      designationId: org.swe.id,
+      employmentTypeId: org.fullTime.id,
+      employmentStatusId: org.active.id,
+      reportingToId: engLeadEmp.id,
+      dateOfJoining: '2022-02-01',
+      basicSalary: '160000.00',
       cnic: '42101-4444444-4',
-    },
-    {
-      code: 'EMP-005',
-      first: 'Hassan',
-      last: 'Raza',
+    }),
+  );
+
+  await employeeRepo.save(
+    employeeRepo.create({
+      employeeCode: 'EMP-005',
+      firstName: 'Hassan',
+      lastName: 'Raza',
       email: 'hassan.raza@demo.com',
       phone: '+92-300-5555555',
-      salary: '155000.00',
+      userId: null,
+      branchId: org.ho.id,
+      departmentId: org.eng.id,
+      designationId: org.swe.id,
+      employmentTypeId: org.fullTime.id,
+      employmentStatusId: org.active.id,
+      reportingToId: engLeadEmp.id,
+      dateOfJoining: '2022-02-01',
+      basicSalary: '155000.00',
       cnic: '42101-5555555-5',
-    },
-  ];
-
-  for (const row of engineers) {
-    await employeeRepo.save(
-      employeeRepo.create({
-        employeeCode: row.code,
-        firstName: row.first,
-        lastName: row.last,
-        email: row.email,
-        phone: row.phone,
-        userId: null,
-        branchId: org.ho.id,
-        departmentId: org.eng.id,
-        designationId: org.swe.id,
-        employmentTypeId: org.fullTime.id,
-        employmentStatusId: org.active.id,
-        reportingToId: engLeadEmp.id,
-        dateOfJoining: '2022-02-01',
-        basicSalary: row.salary,
-        cnic: row.cnic,
-      }),
-    );
-  }
+    }),
+  );
 
   await employeeRepo.save(
     employeeRepo.create({
@@ -869,4 +927,55 @@ async function seedAttendanceLeaveDefaults(tenantDs: DataSource) {
   });
 
   logger.log(`Attendance/leave defaults ready (shift=${general.code})`);
+}
+
+/** Default tax slabs + base compensation for employees missing one. */
+async function seedPayrollDefaults(tenantDs: DataSource) {
+  const taxRepo = tenantDs.getRepository(TaxSlab);
+  if ((await taxRepo.count()) === 0) {
+    await taxRepo.save([
+      taxRepo.create({
+        name: 'Nil',
+        fromCents: 0,
+        toCents: 100_000,
+        rateBps: 0,
+        sortOrder: 1,
+      }),
+      taxRepo.create({
+        name: '5%',
+        fromCents: 100_000,
+        toCents: 300_000,
+        rateBps: 500,
+        sortOrder: 2,
+      }),
+      taxRepo.create({
+        name: '10%',
+        fromCents: 300_000,
+        toCents: null,
+        rateBps: 1000,
+        sortOrder: 3,
+      }),
+    ]);
+  }
+
+  const empRepo = tenantDs.getRepository(Employee);
+  const compRepo = tenantDs.getRepository(Compensation);
+  const employees = await empRepo.find();
+  const today = new Date().toISOString().slice(0, 10);
+  for (const emp of employees) {
+    const existing = await compRepo.findOne({
+      where: { employeeId: emp.id },
+    });
+    if (existing) continue;
+    await compRepo.save(
+      compRepo.create({
+        employeeId: emp.id,
+        baseCents: 500_000,
+        currency: 'USD',
+        effectiveFrom: today,
+        effectiveTo: null,
+      }),
+    );
+  }
+  logger.log('Payroll defaults ready (tax slabs + base compensations)');
 }

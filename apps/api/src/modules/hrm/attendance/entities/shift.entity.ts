@@ -26,6 +26,14 @@ export class Shift {
   @Column({ name: 'grace_minutes', type: 'int', default: 15 })
   graceMinutes!: number;
 
+  /** Minutes before shift end that still count as on-time departure. */
+  @Column({ name: 'early_grace_minutes', type: 'int', default: 0 })
+  earlyGraceMinutes!: number;
+
+  /** Minutes after scheduled end before overtime starts counting. */
+  @Column({ name: 'ot_after_minutes', type: 'int', default: 0 })
+  otAfterMinutes!: number;
+
   @Column({ name: 'is_overnight', default: false })
   isOvernight!: boolean;
 

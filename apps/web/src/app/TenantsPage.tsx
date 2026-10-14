@@ -140,7 +140,14 @@ export function TenantsPage() {
 
   const restore = useMutation({
     mutationFn: (id: string) =>
-      apiPatch(`/platform/tenants/${id}`, { status: 'active' }, token),
+      apiPost(`/platform/tenants/${id}/activate`, {}, token),
+    onSuccess: invalidate,
+    onError: (err) => setError((err as Error).message),
+  });
+
+  const retry = useMutation({
+    mutationFn: (id: string) =>
+      apiPost(`/platform/tenants/${id}/retry`, {}, token),
     onSuccess: invalidate,
     onError: (err) => setError((err as Error).message),
   });
@@ -287,6 +294,16 @@ export function TenantsPage() {
                     <Pencil size={12} />
                     Edit
                   </button>
+                  {row.status === 'failed' && (
+                    <button
+                      type="button"
+                      className="erp-btn erp-btn-primary erp-btn-sm"
+                      onClick={() => retry.mutate(row.id)}
+                      disabled={retry.isPending}
+                    >
+                      Retry provision
+                    </button>
+                  )}
                   {row.slug !== 'demo' &&
                     (row.status === 'suspended' ? (
                       <button
@@ -297,7 +314,7 @@ export function TenantsPage() {
                         <PlayCircle size={12} />
                         Restore
                       </button>
-                    ) : (
+                    ) : row.status !== 'failed' ? (
                       <button
                         type="button"
                         className="erp-btn erp-btn-danger erp-btn-sm"
@@ -309,7 +326,7 @@ export function TenantsPage() {
                         <PauseCircle size={12} />
                         Suspend
                       </button>
-                    ))}
+                    ) : null)}
                 </div>
               </div>
             </article>

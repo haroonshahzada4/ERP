@@ -25,11 +25,13 @@ Tenant is identified by the **subdomain** you open — there is no company picke
 | Horizon Logistics | http://horizon.localhost:5173 | `admin@horizon.com` | `admin` | Orange |
 | Summit Foods | http://summit.localhost:5173 | `admin@summit.com` | `admin` | Sky |
 
-| Role | URL | Email | Password |
-| --- | --- | --- | --- |
-| Super Admin | http://localhost:5173/platform/login | `superadmin@demo.com` | `admin` |
-| HR (demo, no default perms) | http://demo.localhost:5173 | `aisha.khan@demo.com` | `admin` |
-| Employee (demo, no default perms) | http://demo.localhost:5173 | `bilal.ahmed@demo.com` | `admin` |
+| Role | URL | Email | Password | Sees |
+| --- | --- | --- | --- | --- |
+| Super Admin | http://localhost:5173/platform/login | `superadmin@demo.com` | `admin` | Platform console |
+| Company Admin | http://demo.localhost:5173 | `admin@demo.com` | `admin` | Everything |
+| HR | http://demo.localhost:5173 | `aisha.khan@demo.com` | `admin` | Employees, full attendance (edit/import/export/reports), leave, payroll, recruitment, settings |
+| Manager | http://demo.localhost:5173 | `sara.malik@demo.com` | `admin` | Employees (read), attendance check-in + team timesheet/reports, leave |
+| Employee | http://demo.localhost:5173 | `bilal.ahmed@demo.com` | `admin` | Employees (read), own check-in/out + attendance history, leave (read) |
 
 `*.localhost` resolves to `127.0.0.1` on modern browsers — no hosts file edit needed.
 
@@ -67,4 +69,6 @@ Super Admin (`platform:*`) manages plans, entitlements and support access at htt
 - [x] Phase 1 — Auth / RBAC / dark UI shell
 - [x] Phase 2 — Organization / Employee (+ demo seeder)
 - [x] Platform catalog / entitlements / support access
-- [ ] Phase 3 — Shifts / Attendance
+- [x] Phase 3 — Shifts / Attendance
+- [x] Phase 4 — Leave Management
+- [x] Phase 5 — Payroll

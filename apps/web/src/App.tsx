@@ -8,8 +8,9 @@ import { HomePage } from './app/HomePage';
 import { LeavesPage } from './app/LeavesPage';
 import { LoginPage } from './app/LoginPage';
 import { OrganizationPage } from './app/OrganizationPage';
-import { PlaceholderPage } from './app/PlaceholderPage';
+import { PayrollPage } from './app/PayrollPage';
 import { PlatformLoginPage } from './app/PlatformLoginPage';
+import { RecruitmentPage } from './app/RecruitmentPage';
 import {
   PlatformAuditPage,
   PlatformCatalogPage,
@@ -28,6 +29,7 @@ import { TenantsPage } from './app/TenantsPage';
 import { AppShell } from './layouts/AppShell';
 import { AuthProvider } from './lib/auth';
 import { ThemeProvider } from './lib/theme';
+import { ToastProvider } from './lib/toast';
 
 const queryClient = new QueryClient();
 
@@ -35,6 +37,7 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
+        <ToastProvider>
         <AuthProvider>
           <BrowserRouter>
             <Routes>
@@ -59,44 +62,63 @@ export default function App() {
                     element={<Navigate to="/platform/tenants" replace />}
                   />
 
-                  <Route path="roles" element={<RolesPage />} />
-                  <Route path="settings" element={<SettingsPage />} />
-                  <Route path="support-inbox" element={<SupportInboxPage />} />
+                  <Route
+                    element={<FeatureRoute permission="roles.manage" />}
+                  >
+                    <Route path="roles" element={<RolesPage />} />
+                  </Route>
+                  <Route
+                    element={<FeatureRoute permission="tenant.settings" />}
+                  >
+                    <Route path="settings" element={<SettingsPage />} />
+                    <Route path="support-inbox" element={<SupportInboxPage />} />
+                  </Route>
 
-                  <Route element={<FeatureRoute feature="hrm.employees" />}>
+                  <Route
+                    element={
+                      <FeatureRoute
+                        feature="hrm.employees"
+                        permission="employee.read"
+                      />
+                    }
+                  >
                     <Route path="organization" element={<OrganizationPage />} />
                     <Route path="employees" element={<EmployeesPage />} />
                     <Route path="employees/:id" element={<EmployeeProfilePage />} />
                   </Route>
-                  <Route element={<FeatureRoute feature="hrm.attendance" />}>
+                  <Route
+                    element={
+                      <FeatureRoute
+                        feature="hrm.attendance"
+                        permission="attendance.read"
+                      />
+                    }
+                  >
                     <Route path="attendance" element={<AttendancePage />} />
                   </Route>
-                  <Route element={<FeatureRoute feature="hrm.leave" />}>
+                  <Route
+                    element={
+                      <FeatureRoute feature="hrm.leave" permission="leave.read" />
+                    }
+                  >
                     <Route path="leaves" element={<LeavesPage />} />
                   </Route>
-                  <Route element={<FeatureRoute feature="hrm.payroll" />}>
-                    <Route
-                      path="payroll"
-                      element={
-                        <PlaceholderPage
-                          title="Payroll"
-                          description="Compensation, runs, and payslips land in Phase 5."
-                          phase="Phase 5"
-                        />
-                      }
-                    />
+                  <Route
+                    element={
+                      <FeatureRoute feature="hrm.payroll" permission="payroll.view" />
+                    }
+                  >
+                    <Route path="payroll" element={<PayrollPage />} />
                   </Route>
-                  <Route element={<FeatureRoute feature="hrm.recruitment" />}>
-                    <Route
-                      path="recruitment"
-                      element={
-                        <PlaceholderPage
-                          title="Recruitment"
-                          description="Jobs and applications land in Phase 6."
-                          phase="Phase 6"
-                        />
-                      }
-                    />
+                  <Route
+                    element={
+                      <FeatureRoute
+                        feature="hrm.recruitment"
+                        permission="recruitment.read"
+                      />
+                    }
+                  >
+                    <Route path="recruitment" element={<RecruitmentPage />} />
                   </Route>
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Route>
@@ -104,6 +126,7 @@ export default function App() {
             </Routes>
           </BrowserRouter>
         </AuthProvider>
+        </ToastProvider>
       </ThemeProvider>
     </QueryClientProvider>
   );

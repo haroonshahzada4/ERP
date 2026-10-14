@@ -72,11 +72,17 @@ export class EntitlementsService {
       .map((r) => r.feature?.key)
       .filter((k): k is string => !!k);
 
-    // If a module has zero enabled features, nothing to strip; if we later
-    // track module-level disables, child features are already stored per-row.
-
-    // Enforce dependencies: a feature is only usable if its dependency is on.
-    enabled = this.applyDependencies(enabled);
+    // Enforce dependencies from live catalog (includes Super Admin–added features).
+    const catalogFeatures = await this.features.find({
+      select: ['key', 'dependsOnFeatureKey'],
+    });
+    enabled = this.applyDependencies(
+      enabled,
+      catalogFeatures.map((f) => ({
+        key: f.key,
+        dependsOn: f.dependsOnFeatureKey ?? undefined,
+      })),
+    );
 
     const snap: EntitlementSnapshot = {
       tenantId,
@@ -117,28 +123,37 @@ export class EntitlementsService {
     return snap.enabledFeatures.includes(featureKey);
   }
 
-  async listCatalog() {
+  async listCatalog(opts?: { includeInactive?: boolean }) {
+    const includeInactive = !!opts?.includeInactive;
     const modules = await this.modules.find({
-      where: { isActive: true },
       relations: { features: true },
-      order: { sortOrder: 'ASC' },
+      order: { sortOrder: 'ASC', id: 'ASC' },
     });
-    return modules.map((m) => ({
-      id: m.id,
-      key: m.key,
-      name: m.name,
-      description: m.description,
-      features: (m.features ?? [])
-        .filter((f) => f.isActive)
-        .sort((a, b) => a.sortOrder - b.sortOrder)
-        .map((f) => ({
-          id: f.id,
-          key: f.key,
-          name: f.name,
-          description: f.description,
-          dependsOnFeatureKey: f.dependsOnFeatureKey,
-        })),
-    }));
+    return modules
+      .filter((m) => includeInactive || m.isActive)
+      .map((m) => ({
+        id: m.id,
+        key: m.key,
+        name: m.name,
+        description: m.description,
+        isActive: m.isActive,
+        sortOrder: m.sortOrder,
+        featureCount: (m.features ?? []).filter(
+          (f) => includeInactive || f.isActive,
+        ).length,
+        features: (m.features ?? [])
+          .filter((f) => includeInactive || f.isActive)
+          .sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id)
+          .map((f) => ({
+            id: f.id,
+            key: f.key,
+            name: f.name,
+            description: f.description,
+            dependsOnFeatureKey: f.dependsOnFeatureKey,
+            isActive: f.isActive,
+            sortOrder: f.sortOrder,
+          })),
+      }));
   }
 
   async getTenantEntitlements(tenantId: number) {
@@ -173,21 +188,37 @@ export class EntitlementsService {
 
   /**
    * Super Admin overrides: set exact enabled feature keys for a tenant.
-   * Disabling a parent module's features is done by omitting them.
-   * Dependencies are validated (can't enable payroll without employees).
+   * Disabling a parent is done by omitting it (dependents must also be off).
+   * Every catalog feature gets an explicit override row so enable/disable sticks.
    */
   async setTenantFeatures(tenantId: number, enabledKeys: string[]) {
     const tenant = await this.tenants.findOne({ where: { id: tenantId } });
     if (!tenant) throw new NotFoundException('Tenant not found');
+    if (tenant.status === TenantStatus.SUSPENDED) {
+      throw new BadRequestException(
+        `Cannot change features while "${tenant.name}" is suspended. Activate the tenant first.`,
+      );
+    }
+    if (
+      tenant.status === TenantStatus.PROVISIONING ||
+      tenant.status === TenantStatus.FAILED
+    ) {
+      throw new BadRequestException(
+        `Cannot change features while "${tenant.name}" is still provisioning (status: ${tenant.status}).`,
+      );
+    }
 
-    const unique = [...new Set(enabledKeys)];
-    this.assertDependencyClosure(unique);
+    const before = await this.getSnapshot(tenantId);
+    const unique = [...new Set(enabledKeys.map((k) => k.trim()).filter(Boolean))];
+    await this.assertDependencyClosure(unique);
 
-    const allFeatures = await this.features.find();
+    const allFeatures = await this.features.find({ where: { isActive: true } });
     const byKey = new Map(allFeatures.map((f) => [f.key, f]));
     for (const key of unique) {
       if (!byKey.has(key)) {
-        throw new BadRequestException(`Unknown feature: ${key}`);
+        throw new BadRequestException(
+          `Unknown feature key "${key}". Refresh the catalog and try again.`,
+        );
       }
     }
 
@@ -201,12 +232,12 @@ export class EntitlementsService {
         row.enabled = shouldEnable;
         row.source = 'override';
         await this.entitlements.save(row);
-      } else if (shouldEnable) {
+      } else {
         await this.entitlements.save(
           this.entitlements.create({
             tenantId,
             featureId: feature.id,
-            enabled: true,
+            enabled: shouldEnable,
             source: 'override',
           }),
         );
@@ -214,7 +245,24 @@ export class EntitlementsService {
     }
 
     this.invalidate(tenantId);
-    return this.getTenantEntitlements(tenantId);
+    const entitlements = await this.getTenantEntitlements(tenantId);
+    const after = new Set(entitlements.enabledFeatures);
+    const beforeSet = new Set(before.enabledFeatures);
+    const enabled = entitlements.enabledFeatures.filter((k) => !beforeSet.has(k));
+    const disabled = before.enabledFeatures.filter((k) => !after.has(k));
+
+    const parts: string[] = [];
+    if (enabled.length) parts.push(`enabled ${enabled.join(', ')}`);
+    if (disabled.length) parts.push(`disabled ${disabled.join(', ')}`);
+    const changeSummary =
+      parts.length > 0 ? parts.join('; ') : 'no feature changes';
+
+    return {
+      ...entitlements,
+      enabled,
+      disabled,
+      message: `Features updated for ${tenant.name}: ${changeSummary}.`,
+    };
   }
 
   async assignPlan(tenantId: number, planSlug: string) {
@@ -274,9 +322,13 @@ export class EntitlementsService {
       );
     }
 
-    // Disable override features that conflict? Keep overrides as Super Admin intent.
+    // Keep existing Super Admin overrides as intentional.
     this.invalidate(tenantId);
-    return this.getTenantEntitlements(tenantId);
+    const entitlements = await this.getTenantEntitlements(tenantId);
+    return {
+      ...entitlements,
+      message: `Plan “${plan.slug}” assigned. ${entitlements.enabledFeatures.length} features active (overrides preserved).`,
+    };
   }
 
   async ensureDefaultSubscription(tenantId: number, planSlug = DEFAULT_PLAN_SLUG) {
@@ -285,21 +337,324 @@ export class EntitlementsService {
     return this.assignPlan(tenantId, planSlug);
   }
 
-  async listPlans() {
+  async listPlans(opts?: { includeInactive?: boolean }) {
     const plans = await this.plans.find({
-      where: { isActive: true },
       relations: { planFeatures: { feature: true } },
-      order: { sortOrder: 'ASC' },
+      order: { sortOrder: 'ASC', id: 'ASC' },
     });
-    return plans.map((p) => ({
+    return plans
+      .filter((p) => opts?.includeInactive || p.isActive)
+      .map((p) => this.serializePlan(p));
+  }
+
+  async getPlan(id: number) {
+    const plan = await this.plans.findOne({
+      where: { id },
+      relations: { planFeatures: { feature: true } },
+    });
+    if (!plan) throw new NotFoundException('Plan not found');
+    return this.serializePlan(plan);
+  }
+
+  async createPlan(input: {
+    slug: string;
+    name: string;
+    description?: string | null;
+    priceMonthlyCents?: number;
+    currency?: string;
+    featureKeys?: string[];
+    sortOrder?: number;
+    isActive?: boolean;
+  }) {
+    const slug = input.slug.trim().toLowerCase().replace(/\s+/g, '-');
+    if (!/^[a-z0-9-]+$/.test(slug)) {
+      throw new BadRequestException(
+        'Plan slug must be lowercase letters, numbers, and hyphens',
+      );
+    }
+    if (await this.plans.findOne({ where: { slug } })) {
+      throw new BadRequestException(`Plan slug "${slug}" already exists`);
+    }
+    const featureKeys = [...new Set(input.featureKeys ?? [])];
+    await this.assertKnownFeatureKeys(featureKeys);
+
+    const maxSort = await this.plans
+      .createQueryBuilder('p')
+      .select('MAX(p.sortOrder)', 'max')
+      .getRawOne<{ max: string | null }>();
+
+    const plan = await this.plans.save(
+      this.plans.create({
+        slug,
+        name: input.name.trim(),
+        description: input.description?.trim() || null,
+        priceMonthlyCents: input.priceMonthlyCents ?? 0,
+        currency: (input.currency ?? 'USD').toUpperCase(),
+        isActive: input.isActive ?? true,
+        sortOrder: input.sortOrder ?? (Number(maxSort?.max ?? 0) + 1),
+      }),
+    );
+    await this.replacePlanFeatures(plan.id, featureKeys);
+    this.invalidateAll();
+    return {
+      ...(await this.getPlan(plan.id)),
+      message: `Plan “${plan.name}” created with ${featureKeys.length} features.`,
+    };
+  }
+
+  async updatePlan(
+    id: number,
+    input: {
+      name?: string;
+      description?: string | null;
+      priceMonthlyCents?: number;
+      currency?: string;
+      featureKeys?: string[];
+      sortOrder?: number;
+      isActive?: boolean;
+    },
+  ) {
+    const plan = await this.plans.findOne({ where: { id } });
+    if (!plan) throw new NotFoundException('Plan not found');
+
+    if (input.name !== undefined) plan.name = input.name.trim();
+    if (input.description !== undefined) {
+      plan.description = input.description?.trim() || null;
+    }
+    if (input.priceMonthlyCents !== undefined) {
+      plan.priceMonthlyCents = input.priceMonthlyCents;
+    }
+    if (input.currency !== undefined) {
+      plan.currency = input.currency.toUpperCase();
+    }
+    if (input.sortOrder !== undefined) plan.sortOrder = input.sortOrder;
+    if (input.isActive !== undefined) plan.isActive = input.isActive;
+    await this.plans.save(plan);
+
+    if (input.featureKeys !== undefined) {
+      const featureKeys = [...new Set(input.featureKeys)];
+      await this.assertKnownFeatureKeys(featureKeys);
+      await this.replacePlanFeatures(plan.id, featureKeys);
+    }
+
+    this.invalidateAll();
+    return {
+      ...(await this.getPlan(plan.id)),
+      message: `Plan “${plan.name}” updated.`,
+    };
+  }
+
+  async deletePlan(id: number) {
+    const plan = await this.plans.findOne({ where: { id } });
+    if (!plan) throw new NotFoundException('Plan not found');
+
+    const subCount = await this.subscriptions.count({
+      where: { planId: id },
+    });
+    if (subCount > 0) {
+      plan.isActive = false;
+      await this.plans.save(plan);
+      this.invalidateAll();
+      return {
+        status: 'deactivated' as const,
+        id: plan.id,
+        message: `Plan “${plan.name}” has ${subCount} subscription(s), so it was deactivated instead of deleted.`,
+      };
+    }
+
+    await this.planFeatures.delete({ planId: id });
+    await this.plans.remove(plan);
+    this.invalidateAll();
+    return {
+      status: 'deleted' as const,
+      id,
+      message: `Plan “${plan.name}” deleted.`,
+    };
+  }
+
+  async createModule(input: {
+    key: string;
+    name: string;
+    description?: string | null;
+    sortOrder?: number;
+  }) {
+    const key = input.key.trim().toLowerCase();
+    if (!/^[a-z][a-z0-9._-]*$/.test(key)) {
+      throw new BadRequestException(
+        'Module key must start with a letter and use lowercase letters, numbers, dots, underscores, or hyphens',
+      );
+    }
+    if (await this.modules.findOne({ where: { key } })) {
+      throw new BadRequestException(`Module key "${key}" already exists`);
+    }
+    const maxSort = await this.modules
+      .createQueryBuilder('m')
+      .select('MAX(m.sortOrder)', 'max')
+      .getRawOne<{ max: string | null }>();
+    const row = await this.modules.save(
+      this.modules.create({
+        key,
+        name: input.name.trim(),
+        description: input.description?.trim() || null,
+        sortOrder: input.sortOrder ?? Number(maxSort?.max ?? 0) + 1,
+        isActive: true,
+      }),
+    );
+    return {
+      ...row,
+      features: [],
+      message: `Module “${row.name}” created.`,
+    };
+  }
+
+  async updateModule(
+    id: number,
+    input: {
+      name?: string;
+      description?: string | null;
+      sortOrder?: number;
+      isActive?: boolean;
+    },
+  ) {
+    const row = await this.modules.findOne({ where: { id } });
+    if (!row) throw new NotFoundException('Module not found');
+    if (input.name !== undefined) row.name = input.name.trim();
+    if (input.description !== undefined) {
+      row.description = input.description?.trim() || null;
+    }
+    if (input.sortOrder !== undefined) row.sortOrder = input.sortOrder;
+    if (input.isActive !== undefined) row.isActive = input.isActive;
+    await this.modules.save(row);
+    return { ...row, message: `Module “${row.name}” updated.` };
+  }
+
+  async createFeature(input: {
+    moduleId: number;
+    key: string;
+    name: string;
+    description?: string | null;
+    dependsOnFeatureKey?: string | null;
+    sortOrder?: number;
+  }) {
+    const module = await this.modules.findOne({ where: { id: input.moduleId } });
+    if (!module) throw new NotFoundException('Module not found');
+
+    const key = input.key.trim().toLowerCase();
+    if (!/^[a-z][a-z0-9._-]*$/.test(key)) {
+      throw new BadRequestException(
+        'Feature key must start with a letter and use lowercase letters, numbers, dots, underscores, or hyphens',
+      );
+    }
+    if (await this.features.findOne({ where: { key } })) {
+      throw new BadRequestException(`Feature key "${key}" already exists`);
+    }
+    if (input.dependsOnFeatureKey) {
+      const dep = await this.features.findOne({
+        where: { key: input.dependsOnFeatureKey },
+      });
+      if (!dep) {
+        throw new BadRequestException(
+          `Dependency feature "${input.dependsOnFeatureKey}" not found`,
+        );
+      }
+    }
+
+    const maxSort = await this.features
+      .createQueryBuilder('f')
+      .select('MAX(f.sortOrder)', 'max')
+      .where('f.moduleId = :moduleId', { moduleId: module.id })
+      .getRawOne<{ max: string | null }>();
+
+    const row = await this.features.save(
+      this.features.create({
+        moduleId: module.id,
+        key,
+        name: input.name.trim(),
+        description: input.description?.trim() || null,
+        dependsOnFeatureKey: input.dependsOnFeatureKey || null,
+        sortOrder: input.sortOrder ?? Number(maxSort?.max ?? 0) + 1,
+        isActive: true,
+      }),
+    );
+    return { ...row, message: `Feature “${row.name}” added to ${module.name}.` };
+  }
+
+  async updateFeature(
+    id: number,
+    input: {
+      name?: string;
+      description?: string | null;
+      dependsOnFeatureKey?: string | null;
+      sortOrder?: number;
+      isActive?: boolean;
+    },
+  ) {
+    const row = await this.features.findOne({ where: { id } });
+    if (!row) throw new NotFoundException('Feature not found');
+    if (input.name !== undefined) row.name = input.name.trim();
+    if (input.description !== undefined) {
+      row.description = input.description?.trim() || null;
+    }
+    if (input.dependsOnFeatureKey !== undefined) {
+      if (input.dependsOnFeatureKey) {
+        if (input.dependsOnFeatureKey === row.key) {
+          throw new BadRequestException('Feature cannot depend on itself');
+        }
+        const dep = await this.features.findOne({
+          where: { key: input.dependsOnFeatureKey },
+        });
+        if (!dep) {
+          throw new BadRequestException(
+            `Dependency feature "${input.dependsOnFeatureKey}" not found`,
+          );
+        }
+      }
+      row.dependsOnFeatureKey = input.dependsOnFeatureKey || null;
+    }
+    if (input.sortOrder !== undefined) row.sortOrder = input.sortOrder;
+    if (input.isActive !== undefined) row.isActive = input.isActive;
+    await this.features.save(row);
+    this.invalidateAll();
+    return { ...row, message: `Feature “${row.name}” updated.` };
+  }
+
+  private serializePlan(p: Plan) {
+    return {
       id: p.id,
       slug: p.slug,
       name: p.name,
       description: p.description,
       priceMonthlyCents: p.priceMonthlyCents,
       currency: p.currency,
-      featureKeys: (p.planFeatures ?? []).map((pf) => pf.feature.key),
-    }));
+      isActive: p.isActive,
+      sortOrder: p.sortOrder,
+      featureKeys: (p.planFeatures ?? [])
+        .map((pf) => pf.feature?.key)
+        .filter((k): k is string => !!k),
+    };
+  }
+
+  private async assertKnownFeatureKeys(keys: string[]) {
+    if (!keys.length) return;
+    const rows = await this.features.find({ where: { key: In(keys) } });
+    const have = new Set(rows.map((r) => r.key));
+    const missing = keys.filter((k) => !have.has(k));
+    if (missing.length) {
+      throw new BadRequestException(
+        `Unknown feature key(s): ${missing.join(', ')}`,
+      );
+    }
+  }
+
+  private async replacePlanFeatures(planId: number, featureKeys: string[]) {
+    await this.planFeatures.delete({ planId });
+    for (const key of featureKeys) {
+      const feature = await this.features.findOne({ where: { key } });
+      if (!feature) continue;
+      await this.planFeatures.save(
+        this.planFeatures.create({ planId, featureId: feature.id }),
+      );
+    }
   }
 
   async listSubscriptions() {
@@ -339,20 +694,23 @@ export class EntitlementsService {
       ).length,
       subscriptionsActive: activeSubs.length,
       mrrCents: mrr,
-      catalogModules: PLATFORM_CATALOG.length,
-      catalogFeatures: PLATFORM_CATALOG.reduce(
-        (n, m) => n + m.features.length,
-        0,
-      ),
+      catalogModules: await this.modules.count({ where: { isActive: true } }),
+      catalogFeatures: await this.features.count({ where: { isActive: true } }),
     };
   }
 
-  private applyDependencies(enabled: string[]) {
+  private applyDependencies(
+    enabled: string[],
+    deps?: Array<{ key: string; dependsOn?: string }>,
+  ) {
     const set = new Set(enabled);
     const dep = new Map<string, string | undefined>();
-    for (const m of PLATFORM_CATALOG) {
-      for (const f of m.features) dep.set(f.key, f.dependsOn);
-    }
+    const source =
+      deps ??
+      PLATFORM_CATALOG.flatMap((m) =>
+        m.features.map((f) => ({ key: f.key, dependsOn: f.dependsOn })),
+      );
+    for (const f of source) dep.set(f.key, f.dependsOn);
     let changed = true;
     while (changed) {
       changed = false;
@@ -367,15 +725,14 @@ export class EntitlementsService {
     return [...set];
   }
 
-  private assertDependencyClosure(keys: string[]) {
+  private async assertDependencyClosure(keys: string[]) {
     const set = new Set(keys);
-    for (const m of PLATFORM_CATALOG) {
-      for (const f of m.features) {
-        if (set.has(f.key) && f.dependsOn && !set.has(f.dependsOn)) {
-          throw new BadRequestException(
-            `Feature ${f.key} requires ${f.dependsOn}`,
-          );
-        }
+    const rows = await this.features.find({ where: { isActive: true } });
+    for (const f of rows) {
+      if (set.has(f.key) && f.dependsOnFeatureKey && !set.has(f.dependsOnFeatureKey)) {
+        throw new BadRequestException(
+          `Cannot enable "${f.name}" without its dependency. Turn on ${f.dependsOnFeatureKey} first (or leave ${f.key} off).`,
+        );
       }
     }
   }

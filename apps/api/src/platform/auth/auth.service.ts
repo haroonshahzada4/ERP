@@ -5,7 +5,12 @@ import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes } from 'node:crypto';
 import { Repository } from 'typeorm';
+import { TokenAudience } from '../../common/decorators/current-user.decorator';
 import { getTenantContext } from '../../common/tenant/tenant-context';
+import {
+  PLATFORM_PERMISSION_KEYS,
+  SUPER_ADMIN_ROLE,
+} from '../../modules/access/system-roles';
 import { LoginDto } from './dto/login.dto';
 import { Session } from './entities/session.entity';
 import {
@@ -38,7 +43,7 @@ export class AuthService {
       tenant.tenantId,
     );
 
-    return this.buildAuthResponse(user, membership, {
+    return this.buildTenantAuthResponse(user, membership, {
       id: tenant.tenantId,
       slug: tenant.tenantSlug,
       host: tenant.host,
@@ -46,9 +51,7 @@ export class AuthService {
   }
 
   /**
-   * Platform Super Admin login — no company subdomain.
-   * Still binds the JWT to an active membership so existing
-   * tenant-scoped guards / RBAC continue to work.
+   * Platform Super Admin login — no company subdomain, no tenant JWT binding.
    */
   async platformLogin(dto: LoginDto) {
     const user = await this.verifyCredentials(dto);
@@ -56,37 +59,31 @@ export class AuthService {
       throw new ForbiddenException('Platform admin access required');
     }
 
-    const memberships = await this.memberships.find({
-      where: { userId: user.id, status: MembershipStatus.ACTIVE },
-      relations: { tenant: { domains: true } },
-      order: { createdAt: 'ASC' },
-    });
-    const membership =
-      memberships.find((m) => m.tenant.slug === 'demo') ?? memberships[0];
-    if (!membership) {
-      throw new ForbiddenException('No active platform membership');
-    }
-
-    const host =
-      membership.tenant.domains.find((d) => d.isPrimary)?.host ??
-      membership.tenant.domains[0]?.host ??
-      `${membership.tenant.slug}.localhost`;
-
-    return this.buildAuthResponse(user, membership, {
-      id: membership.tenantId,
-      slug: membership.tenant.slug,
-      name: membership.tenant.name,
-      host,
-    });
+    const tokens = await this.issueTokens(user, 'platform');
+    return {
+      user: {
+        id: user.id,
+        email: user.email,
+        fullName: user.fullName,
+      },
+      audience: 'platform' as const,
+      tenant: null,
+      membershipId: null,
+      roles: [SUPER_ADMIN_ROLE],
+      permissions: [...PLATFORM_PERMISSION_KEYS],
+      isPlatformAdmin: true,
+      ...tokens,
+    };
   }
 
   async refresh(refreshToken: string) {
-    const tenant = getTenantContext();
-    if (!tenant) {
-      throw new ForbiddenException('Tenant context required');
-    }
-
-    let payload: { sub: number; sid: number; typ?: string };
+    let payload: {
+      sub: number;
+      sid: number;
+      typ?: string;
+      aud?: TokenAudience;
+      tid?: number;
+    };
     try {
       payload = await this.jwt.verifyAsync(refreshToken, {
         secret: this.config.getOrThrow<string>('jwt.refreshSecret'),
@@ -99,6 +96,8 @@ export class AuthService {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
+    const audience: TokenAudience =
+      payload.aud === 'platform' ? 'platform' : 'tenant';
     const sid = Number(payload.sid);
     const sub = Number(payload.sub);
     const session = await this.sessions.findOne({ where: { id: sid } });
@@ -116,6 +115,35 @@ export class AuthService {
       throw new UnauthorizedException('User inactive');
     }
 
+    session.revokedAt = new Date();
+    await this.sessions.save(session);
+
+    if (audience === 'platform') {
+      if (!user.isPlatformAdmin) {
+        throw new ForbiddenException('Platform admin access required');
+      }
+      const tokens = await this.issueTokens(user, 'platform');
+      return {
+        user: {
+          id: user.id,
+          email: user.email,
+          fullName: user.fullName,
+        },
+        audience: 'platform' as const,
+        tenant: null,
+        membershipId: null,
+        roles: [SUPER_ADMIN_ROLE],
+        permissions: [...PLATFORM_PERMISSION_KEYS],
+        isPlatformAdmin: true,
+        ...tokens,
+      };
+    }
+
+    const tenant = getTenantContext();
+    if (!tenant) {
+      throw new ForbiddenException('Tenant context required');
+    }
+
     const membership = await this.memberships.findOne({
       where: {
         userId: user.id,
@@ -127,16 +155,13 @@ export class AuthService {
       throw new ForbiddenException('Membership revoked');
     }
 
-    session.revokedAt = new Date();
-    await this.sessions.save(session);
-
     const rbac = await this.rbac.getForUser(
       membership.id,
       user.id,
       tenant.tenantId,
       user,
     );
-    const tokens = await this.issueTokens(user, membership);
+    const tokens = await this.issueTokens(user, 'tenant', membership.tenantId);
 
     return {
       user: {
@@ -144,6 +169,7 @@ export class AuthService {
         email: user.email,
         fullName: user.fullName,
       },
+      audience: 'tenant' as const,
       tenant: {
         id: tenant.tenantId,
         slug: tenant.tenantSlug,
@@ -175,21 +201,48 @@ export class AuthService {
     return { status: 'ok' };
   }
 
-  async me(userId: number, membershipId: number, tenantId: number) {
+  async me(user: {
+    userId: number;
+    membershipId: number | null;
+    tenantId: number | null;
+    audience: TokenAudience;
+  }) {
+    const entity = await this.users.findOne({ where: { id: user.userId } });
+    if (!entity) {
+      throw new UnauthorizedException();
+    }
+
+    if (user.audience === 'platform') {
+      return {
+        user: {
+          id: entity.id,
+          email: entity.email,
+          fullName: entity.fullName,
+        },
+        audience: 'platform' as const,
+        tenant: null,
+        membershipId: null,
+        roles: [SUPER_ADMIN_ROLE],
+        permissions: [...PLATFORM_PERMISSION_KEYS],
+        isPlatformAdmin: true,
+      };
+    }
+
     const tenant = getTenantContext();
-    if (!tenant || tenant.tenantId !== tenantId) {
+    if (
+      !tenant ||
+      user.tenantId == null ||
+      user.membershipId == null ||
+      tenant.tenantId !== user.tenantId
+    ) {
       throw new ForbiddenException('Tenant mismatch');
     }
 
-    const user = await this.users.findOne({ where: { id: userId } });
-    if (!user) {
-      throw new UnauthorizedException();
-    }
     const membership = await this.memberships.findOne({
       where: {
-        id: membershipId,
-        userId,
-        tenantId,
+        id: user.membershipId,
+        userId: user.userId,
+        tenantId: user.tenantId,
         status: MembershipStatus.ACTIVE,
       },
       relations: { tenant: true },
@@ -198,17 +251,18 @@ export class AuthService {
       throw new ForbiddenException('Membership revoked');
     }
     const rbac = await this.rbac.getForUser(
-      membershipId,
-      userId,
-      tenantId,
-      user,
+      user.membershipId,
+      user.userId,
+      user.tenantId,
+      entity,
     );
     return {
       user: {
-        id: user.id,
-        email: user.email,
-        fullName: user.fullName,
+        id: entity.id,
+        email: entity.email,
+        fullName: entity.fullName,
       },
+      audience: 'tenant' as const,
       tenant: {
         id: membership.tenant.id,
         slug: membership.tenant.slug,
@@ -238,7 +292,6 @@ export class AuthService {
 
   private async authenticateMember(dto: LoginDto, tenantId: number) {
     const user = await this.verifyCredentials(dto);
-    // Email alone never selects a tenant — membership must match host-resolved tenant.
     const membership = await this.memberships.findOne({
       where: {
         userId: user.id,
@@ -252,7 +305,7 @@ export class AuthService {
     return { user, membership };
   }
 
-  private async buildAuthResponse(
+  private async buildTenantAuthResponse(
     user: User,
     membership: TenantMembership,
     tenant: { id: number; slug: string; host: string; name?: string },
@@ -263,13 +316,14 @@ export class AuthService {
       tenant.id,
       user,
     );
-    const tokens = await this.issueTokens(user, membership);
+    const tokens = await this.issueTokens(user, 'tenant', membership.tenantId);
     return {
       user: {
         id: user.id,
         email: user.email,
         fullName: user.fullName,
       },
+      audience: 'tenant' as const,
       tenant,
       membershipId: membership.id,
       roles: rbac.roles,
@@ -279,7 +333,11 @@ export class AuthService {
     };
   }
 
-  private async issueTokens(user: User, membership: TenantMembership) {
+  private async issueTokens(
+    user: User,
+    audience: TokenAudience,
+    tenantId?: number,
+  ) {
     const expiresAt = new Date(
       Date.now() +
         this.parseTtlMs(this.config.get<string>('jwt.refreshTtl') ?? '7d'),
@@ -294,31 +352,35 @@ export class AuthService {
       }),
     );
 
-    // Slim access token: identity + tenant + session only.
-    const accessToken = await this.jwt.signAsync(
-      {
-        sub: user.id,
-        tid: membership.tenantId,
-        sid: session.id,
-        typ: 'access',
-      },
-      {
-        secret: this.config.getOrThrow<string>('jwt.accessSecret'),
-        expiresIn: this.config.get<string>('jwt.accessTtl') ?? '15m',
-      },
-    );
+    const accessClaims: Record<string, unknown> = {
+      sub: user.id,
+      sid: session.id,
+      typ: 'access',
+      aud: audience,
+    };
+    const refreshClaims: Record<string, unknown> = {
+      sub: user.id,
+      sid: session.id,
+      typ: 'refresh',
+      aud: audience,
+    };
+    if (audience === 'tenant') {
+      if (tenantId == null) {
+        throw new ForbiddenException('Tenant id required for tenant token');
+      }
+      accessClaims.tid = tenantId;
+      refreshClaims.tid = tenantId;
+    }
 
-    const refreshToken = await this.jwt.signAsync(
-      {
-        sub: user.id,
-        sid: session.id,
-        typ: 'refresh',
-      },
-      {
-        secret: this.config.getOrThrow<string>('jwt.refreshSecret'),
-        expiresIn: this.config.get<string>('jwt.refreshTtl') ?? '7d',
-      },
-    );
+    const accessToken = await this.jwt.signAsync(accessClaims, {
+      secret: this.config.getOrThrow<string>('jwt.accessSecret'),
+      expiresIn: this.config.get<string>('jwt.accessTtl') ?? '15m',
+    });
+
+    const refreshToken = await this.jwt.signAsync(refreshClaims, {
+      secret: this.config.getOrThrow<string>('jwt.refreshSecret'),
+      expiresIn: this.config.get<string>('jwt.refreshTtl') ?? '7d',
+    });
 
     session.refreshTokenHash = this.hashToken(refreshToken);
     await this.sessions.save(session);

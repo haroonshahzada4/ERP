@@ -13,6 +13,7 @@ export enum TenantStatus {
   PROVISIONING = 'provisioning',
   ACTIVE = 'active',
   SUSPENDED = 'suspended',
+  FAILED = 'failed',
 }
 
 @Entity({ name: 'tenants' })
@@ -43,6 +44,10 @@ export class Tenant {
 
   @Column({ name: 'theme_mode', type: 'varchar', default: 'dark' })
   themeMode!: 'dark' | 'light';
+
+  /** Last provisioning failure message; cleared on successful activate. */
+  @Column({ name: 'last_error', type: 'text', nullable: true })
+  lastError!: string | null;
 
   @OneToMany(() => TenantDomain, (domain) => domain.tenant)
   domains!: TenantDomain[];

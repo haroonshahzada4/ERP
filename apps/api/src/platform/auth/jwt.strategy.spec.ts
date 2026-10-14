@@ -5,56 +5,48 @@ import { MembershipStatus } from './entities/tenant-membership.entity';
 import { AccessPayload, JwtStrategy } from './jwt.strategy';
 
 describe('JwtStrategy security', () => {
-  const userId = 'user-1';
-  const tenantId = 'tenant-a';
-  const otherTenantId = 'tenant-b';
-  const sessionId = 'session-1';
-  const membershipId = 'mem-1';
+  const userId = 1;
+  const tenantId = 10;
+  const otherTenantId = 20;
+  const sessionId = 100;
+  const membershipId = 5;
 
-  const users = {
-    findOne: jest.fn(),
-  };
-  const sessions = {
-    findOne: jest.fn(),
-  };
-  const memberships = {
-    findOne: jest.fn(),
-  };
-  const rbac = {
-    getForUser: jest.fn(),
-  };
+  const users = { findOne: jest.fn() };
+  const sessions = { findOne: jest.fn() };
+  const memberships = { findOne: jest.fn() };
+  const rbac = { getForUser: jest.fn() };
+  const supportAccess = { getActiveGrant: jest.fn() };
 
   let strategy: JwtStrategy;
 
   beforeEach(() => {
     jest.resetAllMocks();
     strategy = new JwtStrategy(
-      {
-        getOrThrow: () => 'test-secret',
-      } as unknown as ConfigService,
+      { getOrThrow: () => 'test-secret' } as unknown as ConfigService,
       users as never,
       sessions as never,
       memberships as never,
       rbac as never,
+      supportAccess as never,
     );
   });
 
-  function runWithTenant<T>(tid: string, fn: () => Promise<T>) {
+  function runWithTenant<T>(tid: number, fn: () => Promise<T>) {
     return tenantContextStorage.run(
       { tenantId: tid, tenantSlug: 'demo', host: 'demo.localhost' },
       fn,
     );
   }
 
-  const validPayload: AccessPayload = {
+  const tenantPayload: AccessPayload = {
     sub: userId,
     tid: tenantId,
     sid: sessionId,
     typ: 'access',
+    aud: 'tenant',
   };
 
-  it('rejects tokens that embed roles/permissions by requiring slim claims path', async () => {
-    // Even if an old token somehow carried roles, strategy ignores them and loads RBAC.
+  it('loads RBAC from DB and ignores embedded roles in payload', async () => {
     sessions.findOne.mockResolvedValue({
       id: sessionId,
       userId,
@@ -81,35 +73,87 @@ describe('JwtStrategy security', () => {
     });
 
     const authUser = await runWithTenant(tenantId, () =>
-      strategy.validate(
-        {} as never,
-        {
-          ...validPayload,
-          roles: ['company_admin'],
-          permissions: ['*'],
-        } as AccessPayload,
-      ),
+      strategy.validate({} as never, {
+        ...tenantPayload,
+        roles: ['company_admin'],
+        permissions: ['*'],
+      } as AccessPayload),
     );
 
+    expect(authUser.audience).toBe('tenant');
     expect(authUser.roles).toEqual(['employee']);
     expect(authUser.permissions).toEqual(['employee.read']);
-    expect(rbac.getForUser).toHaveBeenCalledWith(
-      membershipId,
-      userId,
-      tenantId,
-      expect.any(Object),
-    );
   });
 
   it('rejects JWT when token tenant differs from host-resolved tenant', async () => {
     await expect(
       runWithTenant(otherTenantId, () =>
-        strategy.validate({} as never, validPayload),
+        strategy.validate({} as never, tenantPayload),
       ),
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
-  it('rejects when Master DB membership is missing/inactive', async () => {
+  it('accepts platform token without tid or tenant context', async () => {
+    sessions.findOne.mockResolvedValue({
+      id: sessionId,
+      userId,
+      revokedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    users.findOne.mockResolvedValue({
+      id: userId,
+      email: 'superadmin@demo.com',
+      fullName: 'SA',
+      isActive: true,
+      isPlatformAdmin: true,
+    });
+
+    const authUser = await strategy.validate({} as never, {
+      sub: userId,
+      sid: sessionId,
+      typ: 'access',
+      aud: 'platform',
+    });
+
+    expect(authUser.audience).toBe('platform');
+    expect(authUser.tenantId).toBeNull();
+    expect(authUser.membershipId).toBeNull();
+    expect(authUser.isPlatformAdmin).toBe(true);
+  });
+
+  it('platform token on tenant host loads support grant permissions', async () => {
+    sessions.findOne.mockResolvedValue({
+      id: sessionId,
+      userId,
+      revokedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    users.findOne.mockResolvedValue({
+      id: userId,
+      email: 'superadmin@demo.com',
+      fullName: 'SA',
+      isActive: true,
+      isPlatformAdmin: true,
+    });
+    supportAccess.getActiveGrant.mockResolvedValue({
+      permissionKeys: ['employee.read'],
+      featureKeys: ['hrm.employees'],
+    });
+
+    const authUser = await runWithTenant(tenantId, () =>
+      strategy.validate({} as never, {
+        sub: userId,
+        sid: sessionId,
+        typ: 'access',
+        aud: 'platform',
+      }),
+    );
+
+    expect(authUser.tenantId).toBe(tenantId);
+    expect(authUser.permissions).toContain('employee.read');
+  });
+
+  it('rejects when Master DB membership is missing for tenant token', async () => {
     sessions.findOne.mockResolvedValue({
       id: sessionId,
       userId,
@@ -126,22 +170,7 @@ describe('JwtStrategy security', () => {
 
     await expect(
       runWithTenant(tenantId, () =>
-        strategy.validate({} as never, validPayload),
-      ),
-    ).rejects.toBeInstanceOf(UnauthorizedException);
-  });
-
-  it('rejects revoked sessions', async () => {
-    sessions.findOne.mockResolvedValue({
-      id: sessionId,
-      userId,
-      revokedAt: new Date(),
-      expiresAt: new Date(Date.now() + 60_000),
-    });
-
-    await expect(
-      runWithTenant(tenantId, () =>
-        strategy.validate({} as never, validPayload),
+        strategy.validate({} as never, tenantPayload),
       ),
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });

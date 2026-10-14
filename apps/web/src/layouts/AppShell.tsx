@@ -237,7 +237,7 @@ export function AppShell() {
 
   const companyName = platformMode
     ? 'Platform Console'
-    : branding.name || session?.tenant.name || 'ERP SaaS';
+    : branding.name || session?.tenant?.name || 'ERP SaaS';
 
   const handleLogout = useCallback(() => logout(), [logout]);
 
@@ -260,7 +260,9 @@ export function AppShell() {
             <div className="min-w-0">
               <p className="truncate font-semibold tracking-tight">{companyName}</p>
               <p className="truncate text-xs text-[var(--erp-muted)]">
-                {platformMode ? 'Super Admin' : `${session?.tenant.slug}.localhost`}
+                {platformMode
+                  ? 'Super Admin'
+                  : `${session?.tenant?.slug ?? 'company'}.localhost`}
               </p>
             </div>
           )}

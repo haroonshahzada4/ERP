@@ -4,12 +4,60 @@ export const SUPER_ADMIN_ROLE = 'super_admin';
 /** Tenant-scoped system roles. Only company_admin has implicit full access. */
 export const COMPANY_ADMIN_ROLE = 'company_admin';
 
+export const HR_MANAGER_ROLE = 'hr_manager';
+export const MANAGER_ROLE = 'manager';
+export const EMPLOYEE_ROLE = 'employee';
+
 export const TENANT_SYSTEM_ROLES = [
   { key: COMPANY_ADMIN_ROLE, name: 'Company Admin' },
-  { key: 'hr_manager', name: 'HR' },
-  { key: 'manager', name: 'Manager' },
-  { key: 'employee', name: 'Employee' },
+  { key: HR_MANAGER_ROLE, name: 'HR' },
+  { key: MANAGER_ROLE, name: 'Manager' },
+  { key: EMPLOYEE_ROLE, name: 'Employee' },
 ] as const;
+
+/**
+ * Default permission keys granted to system roles on seed.
+ * Company Admin uses tenant:* (no row grants). Custom roles are untouched.
+ */
+/**
+ * Local demo defaults only — production Company Admins assign grants explicitly.
+ * Attendance scope: Employee=self, Manager=team, HR=company (via update/import).
+ */
+export const SYSTEM_ROLE_DEFAULT_PERMISSIONS: Record<string, string[]> = {
+  [HR_MANAGER_ROLE]: [
+    'employee.read',
+    'employee.write',
+    'attendance.create',
+    'attendance.read',
+    'attendance.update',
+    'attendance.import',
+    'attendance.export',
+    'attendance.report.read',
+    'attendance.approve',
+    'leave.read',
+    'leave.approve',
+    'payroll.view',
+    'payroll.generate',
+    'payroll.approve.hr',
+    'recruitment.read',
+    'recruitment.write',
+    'tenant.settings',
+  ],
+  [MANAGER_ROLE]: [
+    'employee.read',
+    'attendance.create',
+    'attendance.read',
+    'attendance.report.read',
+    'leave.read',
+    'leave.approve',
+  ],
+  [EMPLOYEE_ROLE]: [
+    'employee.read',
+    'attendance.create',
+    'attendance.read',
+    'leave.read',
+  ],
+};
 
 /** Legacy key migrated to company_admin on seed. */
 export const LEGACY_TENANT_ADMIN_ROLE = 'tenant_admin';

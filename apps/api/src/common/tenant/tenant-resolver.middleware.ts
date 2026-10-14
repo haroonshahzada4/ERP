@@ -21,12 +21,10 @@ export class TenantResolverMiddleware implements NestMiddleware {
   ) {}
 
   async use(req: Request, _res: Response, next: NextFunction) {
-    // Platform Super Admin login has no company subdomain.
     if (this.isTenantlessPath(req)) {
       return next();
     }
 
-    // Reject explicit client tenant id headers/query — never authorize from these.
     if (req.headers['x-tenant-id'] || req.query.tenantId || req.query.tenant_id) {
       throw new ForbiddenException('Client-provided tenant id is not allowed');
     }
@@ -55,16 +53,45 @@ export class TenantResolverMiddleware implements NestMiddleware {
     );
   }
 
+  /**
+   * Paths that may run without a company subdomain:
+   * health, platform login/refresh, and apex platform admin APIs
+   * (except host-bound `.../current/...` routes).
+   */
   private isTenantlessPath(req: Request) {
     const path = (req.originalUrl ?? req.url ?? '').split('?')[0];
-    return (
-      path === '/api/v1/auth/platform/login' ||
-      path.endsWith('/auth/platform/login') ||
-      path === '/api/v1/health' ||
-      path.startsWith('/api/v1/health/') ||
-      path === '/api/v1' ||
-      path === '/api/v1/'
-    );
+    const normalized = path.replace(/\/+$/, '') || '/';
+
+    if (
+      normalized === '/api/v1' ||
+      normalized === '/api/v1/health' ||
+      normalized.startsWith('/api/v1/health/')
+    ) {
+      return true;
+    }
+
+    if (
+      normalized === '/api/v1/auth/platform/login' ||
+      normalized === '/api/v1/auth/platform/refresh' ||
+      normalized.endsWith('/auth/platform/login') ||
+      normalized.endsWith('/auth/platform/refresh')
+    ) {
+      return true;
+    }
+
+    // Apex platform admin APIs — not host-bound "current" snapshots.
+    if (normalized.startsWith('/api/v1/platform/')) {
+      if (normalized.includes('/current/')) {
+        return false;
+      }
+      // entitlements/current is host-bound
+      if (normalized.endsWith('/entitlements/current')) {
+        return false;
+      }
+      return true;
+    }
+
+    return false;
   }
 
   private resolveHost(req: Request): string | null {
@@ -78,8 +105,6 @@ export class TenantResolverMiddleware implements NestMiddleware {
       return requestHost;
     }
 
-    // Local Vite proxy: Host is localhost. Allow X-Tenant-Host only in non-production,
-    // and only as a lookup key into verified domains (same path as production Host).
     const isProd = this.config.get<string>('nodeEnv') === 'production';
     if (isProd) {
       return null;
@@ -91,7 +116,6 @@ export class TenantResolverMiddleware implements NestMiddleware {
       .trim();
 
     if (!headerHost || headerHost === 'localhost' || headerHost === '127.0.0.1') {
-      // No silent default — client must send the company subdomain.
       return null;
     }
 

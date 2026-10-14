@@ -34,9 +34,17 @@ export const PLATFORM_CATALOG: CatalogModuleDef[] = [
       {
         key: 'hrm.attendance',
         name: 'Attendance',
-        description: 'Shifts, check-in/out, corrections',
+        description: 'Shifts, check-in/out, timesheets, reports (no GPS)',
         dependsOn: 'hrm.employees',
-        permissions: ['attendance.read', 'attendance.approve'],
+        permissions: [
+          'attendance.create',
+          'attendance.read',
+          'attendance.update',
+          'attendance.import',
+          'attendance.export',
+          'attendance.report.read',
+          'attendance.approve',
+        ],
       },
       {
         key: 'hrm.leave',
@@ -61,7 +69,7 @@ export const PLATFORM_CATALOG: CatalogModuleDef[] = [
         key: 'hrm.recruitment',
         name: 'Recruitment',
         description: 'Jobs and applications',
-        permissions: ['employee.read'],
+        permissions: ['recruitment.read', 'recruitment.write'],
       },
     ],
   },

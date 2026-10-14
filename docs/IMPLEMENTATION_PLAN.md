@@ -223,7 +223,7 @@ Shared API contracts can be generated from OpenAPI. Avoid importing Nest server 
 - [x] Phase 2 — Organization / Employee
 - [x] Phase 3 — Shifts / Attendance *(no GPS/location on check-in/out)*
 - [x] Phase 4 — Leave Management
-- [ ] Phase 5 — Payroll
+- [x] Phase 5 — Payroll *(compensation, allowances/deductions, tax slabs, attendance snapshot, HR/CEO SoD, payslips)*
 - [ ] Phase 6 — Recruitment
 - [ ] Phase 7 — Cross-cutting UX / Reports
 - [ ] Phase 8 — Production readiness

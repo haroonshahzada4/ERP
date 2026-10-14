@@ -6,8 +6,34 @@ on:
   pull_request:
 
 jobs:
-  build:
+  build-and-test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: erp
+          POSTGRES_PASSWORD: admin
+          POSTGRES_DB: erp_master
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U erp -d erp_master"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NODE_ENV: test
+      MASTER_DB_HOST: 127.0.0.1
+      MASTER_DB_PORT: 5432
+      MASTER_DB_USER: erp
+      MASTER_DB_PASSWORD: admin
+      MASTER_DB_NAME: erp_master
+      JWT_ACCESS_SECRET: ci-test-access-secret-not-for-prod
+      JWT_REFRESH_SECRET: ci-test-refresh-secret-not-for-prod
+      TYPEORM_RUN_MIGRATIONS: 'false'
+      TYPEORM_LOGGING: 'false'
+      MASTER_DB_ENABLED: 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -17,3 +43,5 @@ jobs:
       - run: npm ci
       - run: npm run build:api
       - run: npm run build:web
+      - name: Unit + isolation tests
+        run: npm test -w @erp/api -- --passWithNoTests

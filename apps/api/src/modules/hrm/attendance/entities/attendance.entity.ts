@@ -54,6 +54,12 @@ export class Attendance {
   @Column({ name: 'late_minutes', type: 'int', default: 0 })
   lateMinutes!: number;
 
+  @Column({ name: 'early_departure_minutes', type: 'int', default: 0 })
+  earlyDepartureMinutes!: number;
+
+  @Column({ name: 'overtime_minutes', type: 'int', default: 0 })
+  overtimeMinutes!: number;
+
   @Column({ name: 'worked_minutes', type: 'int', default: 0 })
   workedMinutes!: number;
 

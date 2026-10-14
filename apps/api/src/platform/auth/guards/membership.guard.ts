@@ -11,8 +11,8 @@ import {
 } from '../entities/tenant-membership.entity';
 
 /**
- * Defense-in-depth: every authenticated request re-checks Master DB membership
- * against the host-resolved tenant (not client-supplied tenant ids).
+ * Defense-in-depth: tenant tokens re-check Master DB membership.
+ * Platform tokens skip membership; Feature/Permissions guards enforce support grants.
  */
 @Injectable()
 export class MembershipGuard implements CanActivate {
@@ -33,6 +33,10 @@ export class MembershipGuard implements CanActivate {
     const user = request.user;
     if (!user) return true;
 
+    if (user.audience === 'platform') {
+      return true;
+    }
+
     const tenant = getTenantContext();
     if (!tenant) {
       throw new ForbiddenException('Tenant context required');
@@ -40,6 +44,10 @@ export class MembershipGuard implements CanActivate {
 
     if (user.tenantId !== tenant.tenantId) {
       throw new ForbiddenException('Tenant mismatch');
+    }
+
+    if (user.membershipId == null) {
+      throw new ForbiddenException('Membership required');
     }
 
     const membership = await this.memberships.findOne({

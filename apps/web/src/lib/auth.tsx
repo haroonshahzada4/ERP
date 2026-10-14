@@ -33,8 +33,9 @@ function applySession(
   existing: AuthSession,
   me: {
     user: AuthSession['user'];
-    tenant: { id: string; slug: string; name: string };
-    membershipId: string;
+    audience?: 'platform' | 'tenant';
+    tenant: { id: string; slug: string; name: string } | null;
+    membershipId: string | null;
     roles: string[];
     permissions: string[];
     isPlatformAdmin?: boolean;
@@ -43,7 +44,10 @@ function applySession(
   return {
     ...existing,
     user: me.user,
-    tenant: { ...existing.tenant, ...me.tenant },
+    audience: me.audience ?? existing.audience,
+    tenant: me.tenant
+      ? { ...(existing.tenant ?? { id: '', slug: '' }), ...me.tenant }
+      : null,
     membershipId: me.membershipId,
     roles: me.roles,
     permissions: me.permissions,
@@ -63,8 +67,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     const host = resolveTenantHost();
-    // Drop sessions that don't belong to the current company subdomain.
+    // Drop tenant sessions that don't belong to the current company subdomain.
     if (
+      existing.audience !== 'platform' &&
       host &&
       existing.tenant &&
       !hostMatchesTenant(host, existing.tenant)
@@ -75,15 +80,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    // Platform session on a company subdomain is not valid for tenant UX.
+    if (existing.audience === 'platform' && host) {
+      saveSession(null);
+      clearTenantHost();
+      setLoading(false);
+      return;
+    }
+
     setSession(existing);
     apiGet<{
       user: AuthSession['user'];
-      tenant: { id: string; slug: string; name: string };
-      membershipId: string;
+      audience?: 'platform' | 'tenant';
+      tenant: { id: string; slug: string; name: string } | null;
+      membershipId: string | null;
       roles: string[];
       permissions: string[];
       isPlatformAdmin?: boolean;
-    }>('/auth/me', existing.accessToken)
+    }>('/auth/me', existing.accessToken, existing.audience === 'platform' ? '' : undefined)
       .then((me) => {
         const next = applySession(existing, me);
         saveSession(next);
@@ -112,17 +126,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           null,
           host,
         );
+        result.audience = result.audience ?? 'tenant';
         saveSession(result);
         setSession(result);
       },
       async platformLogin(email, password) {
+        clearTenantHost();
         const result = await apiPost<AuthSession>(
           '/auth/platform/login',
           { email, password },
           null,
           '',
         );
-        if (result.tenant.host) setTenantHost(result.tenant.host);
+        result.audience = 'platform';
+        result.tenant = null;
+        result.membershipId = null;
         saveSession(result);
         setSession(result);
       },
@@ -133,13 +151,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }).catch(() => undefined);
         }
         saveSession(null);
+        clearTenantHost();
         setSession(null);
       },
       hasPermission(key) {
         if (!session) return false;
         const isPlatformKey =
           key === '*' || key === 'platform:*' || key.startsWith('platform.');
-        // Super Admin / platform:* never auto-grants tenant data permissions.
         if (isPlatformKey) {
           return (
             !!session.isPlatformAdmin ||
@@ -147,6 +165,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             session.permissions.includes('*') ||
             session.permissions.includes(key)
           );
+        }
+        if (session.audience === 'platform') {
+          return session.permissions.includes(key);
         }
         if (session.permissions.includes('tenant:*')) return true;
         if (
@@ -161,12 +182,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!session) return;
         const me = await apiGet<{
           user: AuthSession['user'];
-          tenant: { id: string; slug: string; name: string };
-          membershipId: string;
+          audience?: 'platform' | 'tenant';
+          tenant: { id: string; slug: string; name: string } | null;
+          membershipId: string | null;
           roles: string[];
           permissions: string[];
           isPlatformAdmin?: boolean;
-        }>('/auth/me', session.accessToken);
+        }>(
+          '/auth/me',
+          session.accessToken,
+          session.audience === 'platform' ? '' : undefined,
+        );
         const next = applySession(session, me);
         saveSession(next);
         setSession(next);

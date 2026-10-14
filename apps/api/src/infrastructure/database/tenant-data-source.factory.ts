@@ -5,6 +5,9 @@ import { InitOrganizationEmployeeSchema1730000002000 } from './migrations/tenant
 import { AddCompanyBranding1730000003000 } from './migrations/tenant/1730000003000-AddCompanyBranding';
 import { InitAttendanceLeaveSchema1730000004000 } from './migrations/tenant/1730000004000-InitAttendanceLeaveSchema';
 import { ConsolidateLeaveTables1730000005000 } from './migrations/tenant/1730000005000-ConsolidateLeaveTables';
+import { InitPayrollRecruitmentSchema1730000006000 } from './migrations/tenant/1730000006000-InitPayrollRecruitmentSchema';
+import { ExpandPayrollPhase51730000007000 } from './migrations/tenant/1730000007000-ExpandPayrollPhase5';
+import { ExpandAttendancePhase31730000008000 } from './migrations/tenant/1730000008000-ExpandAttendancePhase3';
 import { tenantEntities } from './tenant.entities';
 
 export type TenantDbConnectionInput = {
@@ -36,6 +39,9 @@ export function buildTenantDataSourceOptions(
       AddCompanyBranding1730000003000,
       InitAttendanceLeaveSchema1730000004000,
       ConsolidateLeaveTables1730000005000,
+      InitPayrollRecruitmentSchema1730000006000,
+      ExpandPayrollPhase51730000007000,
+      ExpandAttendancePhase31730000008000,
     ],
   };
 }

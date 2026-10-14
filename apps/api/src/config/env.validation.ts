@@ -1,5 +1,33 @@
 import * as Joi from 'joi';
 
+const WEAK_JWT_SECRETS = new Set([
+  'change-me-access',
+  'change-me-refresh',
+  'erp-local-access-secret-admin',
+  'erp-local-refresh-secret-admin',
+]);
+
+function jwtSecretSchema(label: string) {
+  return Joi.string()
+    .min(8)
+    .custom((value, helpers) => {
+      const env = process.env.NODE_ENV ?? 'development';
+      if (env === 'production') {
+        if (!value || value.length < 32) {
+          return helpers.error('any.invalid', {
+            message: `${label} must be at least 32 characters in production`,
+          });
+        }
+        if (WEAK_JWT_SECRETS.has(value) || /(?:change-me|secret-admin)$/i.test(value)) {
+          return helpers.error('any.invalid', {
+            message: `${label} uses a weak/default value`,
+          });
+        }
+      }
+      return value;
+    }, 'jwt secret strength');
+}
+
 export const envValidationSchema = Joi.object({
   NODE_ENV: Joi.string()
     .valid('development', 'production', 'test')
@@ -31,8 +59,12 @@ export const envValidationSchema = Joi.object({
   REDIS_HOST: Joi.string().default('localhost'),
   REDIS_PORT: Joi.number().port().default(6379),
 
-  JWT_ACCESS_SECRET: Joi.string().min(8).default('change-me-access'),
-  JWT_REFRESH_SECRET: Joi.string().min(8).default('change-me-refresh'),
+  JWT_ACCESS_SECRET: jwtSecretSchema('JWT_ACCESS_SECRET').default(
+    'change-me-access',
+  ),
+  JWT_REFRESH_SECRET: jwtSecretSchema('JWT_REFRESH_SECRET').default(
+    'change-me-refresh',
+  ),
   JWT_ACCESS_TTL: Joi.string().default('15m'),
   JWT_REFRESH_TTL: Joi.string().default('7d'),
 });

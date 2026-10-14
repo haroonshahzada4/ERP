@@ -6,6 +6,7 @@ import { InitAuthSchema1730000001000 } from './migrations/master/1730000001000-I
 import { InitMasterSchema1730000000000 } from './migrations/master/1730000000000-InitMasterSchema';
 import { AddTenantBranding1730000002000 } from './migrations/master/1730000002000-AddTenantBranding';
 import { InitPlatformCatalog1730000003000 } from './migrations/master/1730000003000-InitPlatformCatalog';
+import { TenantProvisioningError1730000004000 } from './migrations/master/1730000004000-TenantProvisioningError';
 import { TenantConnectionManager } from './tenant-connection.manager';
 
 @Global()
@@ -43,6 +44,7 @@ export class DatabaseModule {
               InitAuthSchema1730000001000,
               AddTenantBranding1730000002000,
               InitPlatformCatalog1730000003000,
+              TenantProvisioningError1730000004000,
             ],
             synchronize: false,
             logging: config.get<boolean>('typeorm.logging'),

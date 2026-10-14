@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Authenticated } from '../../common/decorators/authenticated.decorator';
 import {
   AuthUser,
   CurrentUser,
@@ -30,8 +31,15 @@ export class AuthController {
 
   @Public()
   @Post('refresh')
-  @ApiOperation({ summary: 'Rotate refresh token' })
+  @ApiOperation({ summary: 'Rotate refresh token (tenant or platform)' })
   refresh(@Body() dto: RefreshDto) {
+    return this.authService.refresh(dto.refreshToken);
+  }
+
+  @Public()
+  @Post('platform/refresh')
+  @ApiOperation({ summary: 'Rotate platform refresh token (tenantless)' })
+  platformRefresh(@Body() dto: RefreshDto) {
     return this.authService.refresh(dto.refreshToken);
   }
 
@@ -42,10 +50,11 @@ export class AuthController {
     return this.authService.logout(dto.refreshToken);
   }
 
+  @Authenticated()
   @Get('me')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Current user + memberships' })
+  @ApiOperation({ summary: 'Current user (platform or tenant)' })
   me(@CurrentUser() user: AuthUser) {
-    return this.authService.me(user.userId, user.membershipId, user.tenantId);
+    return this.authService.me(user);
   }
 }

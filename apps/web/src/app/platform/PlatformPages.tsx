@@ -7,10 +7,11 @@ import {
   Plus,
   X,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Badge, EmptyState, PageHeader, StatCard } from '../../components/ui';
-import { apiGet, apiPatch, apiPost } from '../../lib/api';
+import { apiDelete, apiGet, apiPatch, apiPost } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
+import { useToast } from '../../lib/toast';
 import { useTenantList } from '../PlatformOverviewPage';
 
 type Plan = {
@@ -20,7 +21,10 @@ type Plan = {
   description: string | null;
   priceMonthlyCents: number;
   currency: string;
+  isActive?: boolean;
+  sortOrder?: number;
   featureKeys: string[];
+  message?: string;
 };
 
 type Subscription = {
@@ -39,17 +43,24 @@ type CatalogModule = {
   key: string;
   name: string;
   description: string | null;
+  isActive?: boolean;
+  sortOrder?: number;
+  featureCount?: number;
   features: {
     id: string;
     key: string;
     name: string;
+    description?: string | null;
     dependsOnFeatureKey: string | null;
+    isActive?: boolean;
   }[];
 };
 
 type TenantEntitlements = {
   tenantId: string;
   planSlug: string | null;
+  tenantStatus?: string;
+  subscriptionStatus?: string | null;
   enabledFeatures: string[];
   modules: {
     key: string;
@@ -62,6 +73,9 @@ type TenantEntitlements = {
       dependsOnFeatureKey: string | null;
     }[];
   }[];
+  message?: string;
+  enabled?: string[];
+  disabled?: string[];
 };
 
 type SupportRow = {
@@ -150,10 +164,33 @@ export function PlatformDashboardPage() {
 export function PlatformPlansPage() {
   const { session } = useAuth();
   const token = session?.accessToken;
+  const toast = useToast();
   const queryClient = useQueryClient();
+  const [showInactive, setShowInactive] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editing, setEditing] = useState<Plan | null>(null);
+  const [form, setForm] = useState({
+    slug: '',
+    name: '',
+    description: '',
+    priceMonthlyCents: 9900,
+    currency: 'USD',
+    featureKeys: [] as string[],
+    isActive: true,
+  });
+
   const plans = useQuery({
-    queryKey: ['platform-plans'],
-    queryFn: () => apiGet<Plan[]>('/platform/plans', token),
+    queryKey: ['platform-plans', showInactive],
+    queryFn: () =>
+      apiGet<Plan[]>(
+        `/platform/plans${showInactive ? '?includeInactive=1' : ''}`,
+        token,
+      ),
+    enabled: !!token,
+  });
+  const catalog = useQuery({
+    queryKey: ['platform-catalog'],
+    queryFn: () => apiGet<CatalogModule[]>('/platform/catalog', token),
     enabled: !!token,
   });
   const subs = useQuery({
@@ -165,64 +202,379 @@ export function PlatformPlansPage() {
   const [tenantId, setTenantId] = useState('');
   const [planSlug, setPlanSlug] = useState('growth');
 
+  const allFeatures = useMemo(
+    () => (catalog.data ?? []).flatMap((m) => m.features),
+    [catalog.data],
+  );
+
+  function openCreate() {
+    setEditing(null);
+    setForm({
+      slug: '',
+      name: '',
+      description: '',
+      priceMonthlyCents: 9900,
+      currency: 'USD',
+      featureKeys: [],
+      isActive: true,
+    });
+    setEditorOpen(true);
+  }
+
+  function openEdit(p: Plan) {
+    setEditing(p);
+    setForm({
+      slug: p.slug,
+      name: p.name,
+      description: p.description ?? '',
+      priceMonthlyCents: p.priceMonthlyCents,
+      currency: p.currency,
+      featureKeys: [...p.featureKeys],
+      isActive: p.isActive !== false,
+    });
+    setEditorOpen(true);
+  }
+
+  const savePlan = useMutation({
+    mutationFn: () =>
+      editing
+        ? apiPatch<Plan>(
+            `/platform/plans/${editing.id}`,
+            {
+              name: form.name,
+              description: form.description || null,
+              priceMonthlyCents: Number(form.priceMonthlyCents),
+              currency: form.currency,
+              featureKeys: form.featureKeys,
+              isActive: form.isActive,
+            },
+            token,
+          )
+        : apiPost<Plan>(
+            '/platform/plans',
+            {
+              slug: form.slug,
+              name: form.name,
+              description: form.description || null,
+              priceMonthlyCents: Number(form.priceMonthlyCents),
+              currency: form.currency,
+              featureKeys: form.featureKeys,
+              isActive: form.isActive,
+            },
+            token,
+          ),
+    onSuccess: (res) => {
+      toast.success(
+        editing ? 'Plan updated' : 'Plan created',
+        res.message ?? res.name,
+      );
+      setEditorOpen(false);
+      queryClient.invalidateQueries({ queryKey: ['platform-plans'] });
+    },
+    onError: (err) => toast.error('Plan save failed', (err as Error).message),
+  });
+
+  const removePlan = useMutation({
+    mutationFn: (id: string) =>
+      apiDelete<{ status: string; message: string }>(`/platform/plans/${id}`, token),
+    onSuccess: (res) => {
+      toast.success(
+        res.status === 'deleted' ? 'Plan deleted' : 'Plan deactivated',
+        res.message,
+      );
+      queryClient.invalidateQueries({ queryKey: ['platform-plans'] });
+    },
+    onError: (err) => toast.error('Could not delete plan', (err as Error).message),
+  });
+
   const assign = useMutation({
     mutationFn: () =>
       apiPost(`/platform/tenants/${tenantId}/subscription`, { planSlug }, token),
     onSuccess: () => {
+      const company =
+        (tenants.data ?? []).find((t) => String(t.id) === tenantId)?.name ??
+        'tenant';
+      toast.success('Plan assigned', `${company} is now on plan “${planSlug}”.`);
       queryClient.invalidateQueries({ queryKey: ['platform-subscriptions'] });
       queryClient.invalidateQueries({ queryKey: ['platform-analytics'] });
+      queryClient.invalidateQueries({ queryKey: ['tenant-entitlements'] });
+      queryClient.invalidateQueries({ queryKey: ['entitlements-current'] });
     },
+    onError: (err) =>
+      toast.error('Could not assign plan', (err as Error).message),
   });
+
+  function toggleFeature(key: string) {
+    setForm((f) => ({
+      ...f,
+      featureKeys: f.featureKeys.includes(key)
+        ? f.featureKeys.filter((k) => k !== key)
+        : [...f.featureKeys, key],
+    }));
+  }
+
+  const activePlans = (plans.data ?? []).filter((p) => p.isActive !== false);
 
   return (
     <section className="space-y-6">
       <PageHeader
         eyebrow="Billing"
         title="Plans & subscriptions"
-        description="Assign a plan to a company. Entitlements sync from the plan unless overridden."
+        description="Create and edit SaaS plans, pick included features, then assign a plan to a company."
+        actions={
+          <button type="button" className="erp-btn erp-btn-primary" onClick={openCreate}>
+            <Plus size={16} />
+            New plan
+          </button>
+        }
       />
-      <div className="grid gap-4 md:grid-cols-3">
-        {(plans.data ?? []).map((p) => (
-          <article key={p.id} className="erp-panel p-5">
-            <p className="text-xs font-semibold uppercase tracking-wider text-[var(--erp-accent)]">
-              {p.slug}
+
+      <label className="inline-flex items-center gap-2 text-sm text-[var(--erp-muted)]">
+        <input
+          type="checkbox"
+          className="erp-check"
+          checked={showInactive}
+          onChange={(e) => setShowInactive(e.target.checked)}
+        />
+        Show inactive plans
+      </label>
+
+      {editorOpen && (
+        <form
+          className="erp-panel space-y-4 p-5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            savePlan.mutate();
+          }}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="font-semibold">
+              {editing ? `Edit plan · ${editing.slug}` : 'Create plan'}
+            </h2>
+            <button
+              type="button"
+              className="erp-btn erp-btn-ghost text-sm"
+              onClick={() => setEditorOpen(false)}
+            >
+              Cancel
+            </button>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+            {!editing && (
+              <label className="text-sm">
+                <span className="text-[var(--erp-muted)]">Slug</span>
+                <input
+                  className="erp-input mt-1 w-full"
+                  value={form.slug}
+                  onChange={(e) => setForm((f) => ({ ...f, slug: e.target.value }))}
+                  placeholder="growth-plus"
+                  required
+                />
+              </label>
+            )}
+            <label className="text-sm">
+              <span className="text-[var(--erp-muted)]">Name</span>
+              <input
+                className="erp-input mt-1 w-full"
+                value={form.name}
+                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                required
+              />
+            </label>
+            <label className="text-sm">
+              <span className="text-[var(--erp-muted)]">Price (cents / mo)</span>
+              <input
+                type="number"
+                min={0}
+                className="erp-input mt-1 w-full"
+                value={form.priceMonthlyCents}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    priceMonthlyCents: Number(e.target.value),
+                  }))
+                }
+              />
+            </label>
+            <label className="text-sm">
+              <span className="text-[var(--erp-muted)]">Currency</span>
+              <input
+                className="erp-input mt-1 w-full"
+                value={form.currency}
+                onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value }))}
+              />
+            </label>
+            <label className="text-sm md:col-span-2 lg:col-span-4">
+              <span className="text-[var(--erp-muted)]">Description</span>
+              <input
+                className="erp-input mt-1 w-full"
+                value={form.description}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, description: e.target.value }))
+                }
+              />
+            </label>
+          </div>
+
+          <div>
+            <p className="mb-2 text-sm font-medium">Included features</p>
+            <div className="grid max-h-64 gap-2 overflow-y-auto sm:grid-cols-2 lg:grid-cols-3">
+              {(catalog.data ?? []).map((m) => (
+                <div key={m.key} className="rounded-xl border border-[var(--erp-line)] p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-[var(--erp-accent)]">
+                    {m.name}
+                  </p>
+                  <ul className="mt-2 space-y-1.5">
+                    {m.features.map((f) => (
+                      <label
+                        key={f.key}
+                        className="flex cursor-pointer items-center gap-2 text-xs"
+                      >
+                        <input
+                          type="checkbox"
+                          className="erp-check"
+                          checked={form.featureKeys.includes(f.key)}
+                          onChange={() => toggleFeature(f.key)}
+                        />
+                        <span>
+                          {f.name}
+                          <span className="ml-1 text-[var(--erp-muted)]">{f.key}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-[var(--erp-muted)]">
+              {form.featureKeys.length} selected
+              {allFeatures.length
+                ? ` of ${allFeatures.length} catalog features`
+                : ''}
             </p>
-            <h2 className="mt-1 text-xl font-semibold">{p.name}</h2>
-            <p className="mt-1 text-sm text-[var(--erp-muted)]">{p.description}</p>
+          </div>
+
+          <label className="inline-flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="erp-check"
+              checked={form.isActive}
+              onChange={(e) => setForm((f) => ({ ...f, isActive: e.target.checked }))}
+            />
+            Active (assignable to tenants)
+          </label>
+
+          <button
+            type="submit"
+            className="erp-btn erp-btn-primary"
+            disabled={savePlan.isPending}
+          >
+            {savePlan.isPending ? 'Saving…' : editing ? 'Update plan' : 'Create plan'}
+          </button>
+        </form>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {(plans.data ?? []).map((p) => (
+          <article key={p.id} className="erp-panel flex flex-col p-5">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-[var(--erp-accent)]">
+                  {p.slug}
+                </p>
+                <h2 className="mt-1 text-xl font-semibold">{p.name}</h2>
+              </div>
+              <Badge tone={p.isActive === false ? 'warning' : 'success'}>
+                {p.isActive === false ? 'Inactive' : 'Active'}
+              </Badge>
+            </div>
+            <p className="mt-1 text-sm text-[var(--erp-muted)]">
+              {p.description || 'No description'}
+            </p>
             <p className="mt-4 text-3xl font-semibold">
               {money(p.priceMonthlyCents)}
               <span className="text-sm font-normal text-[var(--erp-muted)]">/mo</span>
             </p>
-            <ul className="mt-4 space-y-1 text-xs text-[var(--erp-muted)]">
+            <ul className="mt-4 max-h-40 flex-1 space-y-1 overflow-y-auto text-xs text-[var(--erp-muted)]">
+              {p.featureKeys.length === 0 && <li>No features included</li>}
               {p.featureKeys.map((k) => (
                 <li key={k} className="flex items-center gap-1.5">
-                  <Check size={12} className="text-[var(--erp-success)]" />
+                  <Check size={12} className="shrink-0 text-[var(--erp-success)]" />
                   {k}
                 </li>
               ))}
             </ul>
+            <div className="mt-4 flex flex-wrap gap-2 border-t border-[var(--erp-line)] pt-4">
+              <button
+                type="button"
+                className="erp-btn erp-btn-ghost text-sm"
+                onClick={() => openEdit(p)}
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                className="erp-btn erp-btn-danger text-sm"
+                disabled={removePlan.isPending}
+                onClick={() => {
+                  if (
+                    confirm(
+                      `Delete plan “${p.name}”? If it has subscriptions it will be deactivated instead.`,
+                    )
+                  ) {
+                    removePlan.mutate(p.id);
+                  }
+                }}
+              >
+                Delete
+              </button>
+            </div>
           </article>
         ))}
       </div>
 
+      {!plans.isLoading && !(plans.data ?? []).length && (
+        <EmptyState
+          title="No plans yet"
+          description="Create a plan and attach catalog features."
+          action={
+            <button type="button" className="erp-btn erp-btn-primary" onClick={openCreate}>
+              New plan
+            </button>
+          }
+        />
+      )}
+
       <div className="erp-panel space-y-3 p-5">
         <h2 className="font-semibold">Assign plan</h2>
         <div className="grid gap-3 md:grid-cols-3">
-          <select className="erp-input" value={tenantId} onChange={(e) => setTenantId(e.target.value)}>
+          <select
+            className="erp-input"
+            value={tenantId}
+            onChange={(e) => setTenantId(e.target.value)}
+          >
             <option value="">Select tenant…</option>
             {(tenants.data ?? []).map((t) => (
-              <option key={t.id} value={t.id}>{t.name}</option>
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
             ))}
           </select>
-          <select className="erp-input" value={planSlug} onChange={(e) => setPlanSlug(e.target.value)}>
-            {(plans.data ?? []).map((p) => (
-              <option key={p.slug} value={p.slug}>{p.name}</option>
+          <select
+            className="erp-input"
+            value={planSlug}
+            onChange={(e) => setPlanSlug(e.target.value)}
+          >
+            {activePlans.map((p) => (
+              <option key={p.slug} value={p.slug}>
+                {p.name}
+              </option>
             ))}
           </select>
           <button
             type="button"
             className="erp-btn erp-btn-primary"
-            disabled={!tenantId || assign.isPending}
+            disabled={!tenantId || !planSlug || assign.isPending}
             onClick={() => assign.mutate()}
           >
             Assign
@@ -248,7 +600,9 @@ export function PlatformPlansPage() {
               <tr key={s.id} className="border-t border-[var(--erp-line)]">
                 <td className="px-5 py-2.5">{s.tenantName}</td>
                 <td className="px-5 py-2.5">{s.planName}</td>
-                <td className="px-5 py-2.5"><Badge tone="success">{s.status}</Badge></td>
+                <td className="px-5 py-2.5">
+                  <Badge tone="success">{s.status}</Badge>
+                </td>
                 <td className="px-5 py-2.5">{money(s.mrrCents)}</td>
               </tr>
             ))}
@@ -261,10 +615,106 @@ export function PlatformPlansPage() {
 
 export function PlatformCatalogPage() {
   const { session } = useAuth();
+  const token = session?.accessToken;
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const [showInactive, setShowInactive] = useState(false);
+  const [moduleForm, setModuleForm] = useState({
+    key: '',
+    name: '',
+    description: '',
+  });
+  const [featureForm, setFeatureForm] = useState({
+    moduleId: '',
+    key: '',
+    name: '',
+    description: '',
+    dependsOnFeatureKey: '',
+  });
+
   const catalog = useQuery({
-    queryKey: ['platform-catalog'],
-    queryFn: () => apiGet<CatalogModule[]>('/platform/catalog', session?.accessToken),
-    enabled: !!session?.accessToken,
+    queryKey: ['platform-catalog', showInactive],
+    queryFn: () =>
+      apiGet<CatalogModule[]>(
+        `/platform/catalog${showInactive ? '?includeInactive=1' : ''}`,
+        token,
+      ),
+    enabled: !!token,
+  });
+
+  const modules = catalog.data ?? [];
+  const featureOptions = modules.flatMap((m) => m.features);
+
+  const createModule = useMutation({
+    mutationFn: () =>
+      apiPost<{ message?: string }>('/platform/catalog/modules', moduleForm, token),
+    onSuccess: (res) => {
+      toast.success('Module created', res.message);
+      setModuleForm({ key: '', name: '', description: '' });
+      queryClient.invalidateQueries({ queryKey: ['platform-catalog'] });
+      queryClient.invalidateQueries({ queryKey: ['platform-analytics'] });
+      queryClient.invalidateQueries({ queryKey: ['platform-plans'] });
+    },
+    onError: (err) => toast.error('Could not create module', (err as Error).message),
+  });
+
+  const createFeature = useMutation({
+    mutationFn: () =>
+      apiPost<{ message?: string }>(
+        '/platform/catalog/features',
+        {
+          moduleId: Number(featureForm.moduleId),
+          key: featureForm.key,
+          name: featureForm.name,
+          description: featureForm.description || null,
+          dependsOnFeatureKey: featureForm.dependsOnFeatureKey || null,
+        },
+        token,
+      ),
+    onSuccess: (res) => {
+      toast.success('Feature created', res.message);
+      setFeatureForm({
+        moduleId: featureForm.moduleId,
+        key: '',
+        name: '',
+        description: '',
+        dependsOnFeatureKey: '',
+      });
+      queryClient.invalidateQueries({ queryKey: ['platform-catalog'] });
+      queryClient.invalidateQueries({ queryKey: ['platform-analytics'] });
+      queryClient.invalidateQueries({ queryKey: ['tenant-entitlements'] });
+    },
+    onError: (err) =>
+      toast.error('Could not create feature', (err as Error).message),
+  });
+
+  const toggleModule = useMutation({
+    mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) =>
+      apiPatch<{ message?: string }>(
+        `/platform/catalog/modules/${id}`,
+        { isActive },
+        token,
+      ),
+    onSuccess: (res) => {
+      toast.success('Module updated', res.message);
+      queryClient.invalidateQueries({ queryKey: ['platform-catalog'] });
+    },
+    onError: (err) => toast.error('Update failed', (err as Error).message),
+  });
+
+  const toggleFeature = useMutation({
+    mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) =>
+      apiPatch<{ message?: string }>(
+        `/platform/catalog/features/${id}`,
+        { isActive },
+        token,
+      ),
+    onSuccess: (res) => {
+      toast.success('Feature updated', res.message);
+      queryClient.invalidateQueries({ queryKey: ['platform-catalog'] });
+      queryClient.invalidateQueries({ queryKey: ['tenant-entitlements'] });
+    },
+    onError: (err) => toast.error('Update failed', (err as Error).message),
   });
 
   return (
@@ -272,26 +722,226 @@ export function PlatformCatalogPage() {
       <PageHeader
         eyebrow="Catalog"
         title="Modules & features"
-        description="Central SaaS catalog. Super Admin enables these per tenant."
+        description="Live catalog from the database. Newly added modules and features appear here and become available for plans and tenant entitlements."
       />
-      <div className="grid gap-4 lg:grid-cols-3">
-        {(catalog.data ?? []).map((m) => (
-          <article key={m.id} className="erp-panel p-5">
-            <h2 className="text-lg font-semibold">{m.name}</h2>
-            <p className="text-xs text-[var(--erp-muted)]">{m.key}</p>
-            <ul className="mt-4 space-y-2">
+
+      <div className="flex flex-wrap items-center gap-4 text-sm text-[var(--erp-muted)]">
+        <span>
+          {modules.length} module{modules.length === 1 ? '' : 's'} ·{' '}
+          {featureOptions.length} feature{featureOptions.length === 1 ? '' : 's'}
+        </span>
+        <label className="inline-flex items-center gap-2">
+          <input
+            type="checkbox"
+            className="erp-check"
+            checked={showInactive}
+            onChange={(e) => setShowInactive(e.target.checked)}
+          />
+          Show inactive
+        </label>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <form
+          className="erp-panel space-y-3 p-5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            createModule.mutate();
+          }}
+        >
+          <h2 className="font-semibold">Add module</h2>
+          <input
+            className="erp-input"
+            placeholder="key e.g. inventory"
+            value={moduleForm.key}
+            onChange={(e) => setModuleForm((f) => ({ ...f, key: e.target.value }))}
+            required
+          />
+          <input
+            className="erp-input"
+            placeholder="Display name"
+            value={moduleForm.name}
+            onChange={(e) => setModuleForm((f) => ({ ...f, name: e.target.value }))}
+            required
+          />
+          <input
+            className="erp-input"
+            placeholder="Description (optional)"
+            value={moduleForm.description}
+            onChange={(e) =>
+              setModuleForm((f) => ({ ...f, description: e.target.value }))
+            }
+          />
+          <button
+            type="submit"
+            className="erp-btn erp-btn-primary"
+            disabled={createModule.isPending}
+          >
+            Create module
+          </button>
+        </form>
+
+        <form
+          className="erp-panel space-y-3 p-5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            createFeature.mutate();
+          }}
+        >
+          <h2 className="font-semibold">Add feature</h2>
+          <select
+            className="erp-input"
+            value={featureForm.moduleId}
+            onChange={(e) =>
+              setFeatureForm((f) => ({ ...f, moduleId: e.target.value }))
+            }
+            required
+          >
+            <option value="">Select module…</option>
+            {modules.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name} ({m.key})
+              </option>
+            ))}
+          </select>
+          <input
+            className="erp-input"
+            placeholder="key e.g. inventory.stock"
+            value={featureForm.key}
+            onChange={(e) => setFeatureForm((f) => ({ ...f, key: e.target.value }))}
+            required
+          />
+          <input
+            className="erp-input"
+            placeholder="Display name"
+            value={featureForm.name}
+            onChange={(e) => setFeatureForm((f) => ({ ...f, name: e.target.value }))}
+            required
+          />
+          <input
+            className="erp-input"
+            placeholder="Description (optional)"
+            value={featureForm.description}
+            onChange={(e) =>
+              setFeatureForm((f) => ({ ...f, description: e.target.value }))
+            }
+          />
+          <select
+            className="erp-input"
+            value={featureForm.dependsOnFeatureKey}
+            onChange={(e) =>
+              setFeatureForm((f) => ({
+                ...f,
+                dependsOnFeatureKey: e.target.value,
+              }))
+            }
+          >
+            <option value="">No dependency</option>
+            {featureOptions.map((f) => (
+              <option key={f.key} value={f.key}>
+                {f.name} ({f.key})
+              </option>
+            ))}
+          </select>
+          <button
+            type="submit"
+            className="erp-btn erp-btn-primary"
+            disabled={createFeature.isPending || !featureForm.moduleId}
+          >
+            Create feature
+          </button>
+        </form>
+      </div>
+
+      {catalog.isLoading && (
+        <p className="text-sm text-[var(--erp-muted)]">Loading catalog…</p>
+      )}
+
+      {catalog.isError && (
+        <div className="rounded-xl border border-[color-mix(in_srgb,var(--erp-danger)_30%,transparent)] bg-[color-mix(in_srgb,var(--erp-danger)_10%,transparent)] px-4 py-3 text-sm text-[var(--erp-danger)]">
+          {(catalog.error as Error).message}
+        </div>
+      )}
+
+      {!catalog.isLoading && modules.length === 0 && (
+        <EmptyState
+          title="Catalog is empty"
+          description="Add a module, then attach features. They will show up for plans and tenant entitlements immediately."
+        />
+      )}
+
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        {modules.map((m) => (
+          <article key={m.id} className="erp-panel flex flex-col p-5">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <h2 className="text-lg font-semibold">{m.name}</h2>
+                <p className="font-mono text-xs text-[var(--erp-muted)]">{m.key}</p>
+              </div>
+              <Badge tone={m.isActive === false ? 'warning' : 'success'}>
+                {m.isActive === false ? 'Off' : 'On'}
+              </Badge>
+            </div>
+            {m.description && (
+              <p className="mt-2 text-sm text-[var(--erp-muted)]">{m.description}</p>
+            )}
+            <p className="mt-3 text-xs text-[var(--erp-muted)]">
+              {m.features.length} feature{m.features.length === 1 ? '' : 's'}
+            </p>
+            <ul className="mt-3 max-h-72 flex-1 space-y-2 overflow-y-auto">
+              {m.features.length === 0 && (
+                <li className="text-sm text-[var(--erp-muted)]">No features yet</li>
+              )}
               {m.features.map((f) => (
-                <li key={f.key} className="rounded-lg border border-[var(--erp-line)] px-3 py-2 text-sm">
-                  <p className="font-medium">{f.name}</p>
-                  <p className="font-mono text-[11px] text-[var(--erp-accent)]">{f.key}</p>
-                  {f.dependsOnFeatureKey && (
-                    <p className="text-[11px] text-[var(--erp-muted)]">
-                      requires {f.dependsOnFeatureKey}
-                    </p>
-                  )}
+                <li
+                  key={f.id}
+                  className="rounded-lg border border-[var(--erp-line)] px-3 py-2 text-sm"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-medium">{f.name}</p>
+                      <p className="font-mono text-[11px] text-[var(--erp-accent)]">
+                        {f.key}
+                      </p>
+                      {f.description && (
+                        <p className="mt-1 text-[11px] text-[var(--erp-muted)]">
+                          {f.description}
+                        </p>
+                      )}
+                      {f.dependsOnFeatureKey && (
+                        <p className="mt-1 text-[11px] text-[var(--erp-muted)]">
+                          requires {f.dependsOnFeatureKey}
+                        </p>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="shrink-0 text-[11px] text-[var(--erp-accent)] hover:underline"
+                      onClick={() =>
+                        toggleFeature.mutate({
+                          id: f.id,
+                          isActive: f.isActive === false,
+                        })
+                      }
+                    >
+                      {f.isActive === false ? 'Enable' : 'Disable'}
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>
+            <button
+              type="button"
+              className="erp-btn erp-btn-ghost mt-4 text-sm"
+              onClick={() =>
+                toggleModule.mutate({
+                  id: m.id,
+                  isActive: m.isActive === false,
+                })
+              }
+            >
+              {m.isActive === false ? 'Activate module' : 'Deactivate module'}
+            </button>
           </article>
         ))}
       </div>
@@ -302,6 +952,7 @@ export function PlatformCatalogPage() {
 export function PlatformFeaturesPage() {
   const { session } = useAuth();
   const token = session?.accessToken;
+  const toast = useToast();
   const queryClient = useQueryClient();
   const tenants = useTenantList();
   const [tenantId, setTenantId] = useState('');
@@ -314,35 +965,75 @@ export function PlatformFeaturesPage() {
 
   const [selected, setSelected] = useState<string[]>([]);
   const loaded = entitlements.data;
+
   useEffect(() => {
-    if (loaded) setSelected(loaded.enabledFeatures);
+    if (loaded) setSelected([...loaded.enabledFeatures]);
   }, [loaded]);
+
+  const companyName =
+    (tenants.data ?? []).find((t) => String(t.id) === tenantId)?.name ??
+    'company';
+
+  const dirty = useMemo(() => {
+    if (!loaded) return false;
+    const a = [...loaded.enabledFeatures].sort().join('|');
+    const b = [...selected].sort().join('|');
+    return a !== b;
+  }, [loaded, selected]);
+
+  const allFeatures = useMemo(
+    () => loaded?.modules.flatMap((m) => m.features) ?? [],
+    [loaded],
+  );
 
   const save = useMutation({
     mutationFn: () =>
-      apiPatch(`/platform/entitlements/${tenantId}`, { featureKeys: selected }, token),
-    onSuccess: () => {
+      apiPatch<TenantEntitlements>(
+        `/platform/entitlements/${tenantId}`,
+        { featureKeys: selected },
+        token,
+      ),
+    onSuccess: (result) => {
+      toast.success(
+        'Features saved',
+        result.message ??
+          `Entitlements updated for ${companyName} (${result.enabledFeatures.length} enabled).`,
+      );
+      queryClient.setQueryData(['tenant-entitlements', tenantId], result);
       queryClient.invalidateQueries({ queryKey: ['tenant-entitlements', tenantId] });
       queryClient.invalidateQueries({ queryKey: ['entitlements-current'] });
     },
+    onError: (err) =>
+      toast.error('Could not save features', (err as Error).message),
   });
 
   function toggle(key: string, dependsOn?: string | null) {
     setSelected((prev) => {
       if (prev.includes(key)) {
-        // Also disable dependents
-        return prev.filter(
-          (k) =>
-            k !== key &&
-            !loaded?.modules
-              .flatMap((m) => m.features)
-              .some((f) => f.key === k && f.dependsOnFeatureKey === key),
-        );
+        const dependents = allFeatures
+          .filter((f) => f.dependsOnFeatureKey === key)
+          .map((f) => f.key);
+        return prev.filter((k) => k !== key && !dependents.includes(k));
       }
-      const next = [...prev, key];
-      if (dependsOn && !next.includes(dependsOn)) next.push(dependsOn);
-      return next;
+      const next = new Set(prev);
+      next.add(key);
+      if (dependsOn) next.add(dependsOn);
+      // Walk dependency chain upward
+      let parent = dependsOn;
+      while (parent) {
+        next.add(parent);
+        parent =
+          allFeatures.find((f) => f.key === parent)?.dependsOnFeatureKey ?? null;
+      }
+      return [...next];
     });
+  }
+
+  function selectPlanDefaults() {
+    if (!loaded) return;
+    // Keep currently effective from server as baseline if user wants reset
+    setSelected([...loaded.enabledFeatures]);
+    toast.info('Reset to last saved', 'Unsaved checkbox changes were discarded.');
   }
 
   return (
@@ -350,60 +1041,146 @@ export function PlatformFeaturesPage() {
       <PageHeader
         eyebrow="Entitlements"
         title="Tenant feature configuration"
-        description="Enable or disable individual features for a company. Disabling a parent removes dependents."
+        description="Enable or disable features for a company. Disabling a parent also turns off dependents. Changes apply after you save."
         actions={
-          <button
-            type="button"
-            className="erp-btn erp-btn-primary"
-            disabled={!tenantId || save.isPending}
-            onClick={() => save.mutate()}
-          >
-            Save entitlements
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="erp-btn erp-btn-ghost"
+              disabled={!tenantId || !dirty || save.isPending}
+              onClick={selectPlanDefaults}
+            >
+              Reset
+            </button>
+            <button
+              type="button"
+              className="erp-btn erp-btn-primary"
+              disabled={!tenantId || !dirty || save.isPending || entitlements.isLoading}
+              onClick={() => {
+                if (!tenantId) {
+                  toast.error('Select a tenant', 'Choose a company before saving.');
+                  return;
+                }
+                save.mutate();
+              }}
+            >
+              {save.isPending ? 'Saving…' : 'Save features'}
+            </button>
+          </div>
         }
       />
-      <select
-        className="erp-input max-w-md"
-        value={tenantId}
-        onChange={(e) => setTenantId(e.target.value)}
-      >
-        <option value="">Select tenant…</option>
-        {(tenants.data ?? []).map((t) => (
-          <option key={t.id} value={t.id}>
-            {t.name} ({t.slug})
-          </option>
-        ))}
-      </select>
+
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+        <label className="block min-w-[16rem] flex-1 text-sm">
+          <span className="text-[var(--erp-muted)]">Company</span>
+          <select
+            className="erp-input mt-1 w-full max-w-md"
+            value={tenantId}
+            onChange={(e) => {
+              setTenantId(e.target.value);
+              setSelected([]);
+            }}
+          >
+            <option value="">Select tenant…</option>
+            {(tenants.data ?? []).map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name} ({t.slug})
+              </option>
+            ))}
+          </select>
+        </label>
+        {dirty && (
+          <Badge tone="warning">Unsaved changes</Badge>
+        )}
+      </div>
+
+      {!tenantId && (
+        <EmptyState
+          title="Select a company"
+          description="Pick a tenant to view and toggle its feature entitlements."
+        />
+      )}
+
+      {tenantId && entitlements.isLoading && (
+        <p className="text-sm text-[var(--erp-muted)]">Loading entitlements…</p>
+      )}
+
+      {tenantId && entitlements.isError && (
+        <div className="rounded-xl border border-[color-mix(in_srgb,var(--erp-danger)_30%,transparent)] bg-[color-mix(in_srgb,var(--erp-danger)_10%,transparent)] px-4 py-3 text-sm text-[var(--erp-danger)]">
+          {(entitlements.error as Error).message || 'Failed to load entitlements.'}
+        </div>
+      )}
 
       {loaded && (
-        <p className="text-sm text-[var(--erp-muted)]">
-          Plan: <span className="text-[var(--erp-accent)]">{loaded.planSlug}</span>
-        </p>
+        <div className="flex flex-wrap items-center gap-3 text-sm text-[var(--erp-muted)]">
+          <span>
+            Plan:{' '}
+            <span className="font-medium text-[var(--erp-accent)]">
+              {loaded.planSlug ?? '—'}
+            </span>
+          </span>
+          {loaded.tenantStatus && (
+            <Badge tone={loaded.tenantStatus === 'active' ? 'success' : 'warning'}>
+              {loaded.tenantStatus}
+            </Badge>
+          )}
+          <span>
+            Enabled:{' '}
+            <span className="text-[var(--erp-text)]">{selected.length}</span>
+          </span>
+        </div>
       )}
 
       <div className="space-y-4">
         {(loaded?.modules ?? []).map((m) => (
           <div key={m.key} className="erp-panel p-5">
-            <h2 className="font-semibold">{m.name}</h2>
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="font-semibold">{m.name}</h2>
+              <span className="text-xs text-[var(--erp-muted)]">
+                {m.features.filter((f) => selected.includes(f.key)).length}/
+                {m.features.length} on
+              </span>
+            </div>
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               {m.features.map((f) => {
                 const on = selected.includes(f.key);
+                const depMissing =
+                  !!f.dependsOnFeatureKey &&
+                  !selected.includes(f.dependsOnFeatureKey);
                 return (
                   <label
                     key={f.key}
-                    className="erp-hover flex cursor-pointer items-center gap-3 rounded-xl border border-[var(--erp-line)] px-3 py-2.5"
+                    className={[
+                      'erp-hover flex cursor-pointer items-start gap-3 rounded-xl border px-3 py-2.5',
+                      on
+                        ? 'border-[color-mix(in_srgb,var(--erp-accent)_40%,var(--erp-line))] bg-[var(--erp-accent-softer)]'
+                        : 'border-[var(--erp-line)]',
+                    ].join(' ')}
                   >
                     <input
                       type="checkbox"
-                      className="erp-check"
+                      className="erp-check mt-1"
                       checked={on}
                       onChange={() => toggle(f.key, f.dependsOnFeatureKey)}
                     />
-                    <span>
-                      <span className="block text-sm font-medium">{f.name}</span>
-                      <span className="font-mono text-[11px] text-[var(--erp-muted)]">
+                    <span className="min-w-0">
+                      <span className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-medium">{f.name}</span>
+                        <Badge tone={on ? 'success' : 'neutral'}>
+                          {on ? 'Enabled' : 'Disabled'}
+                        </Badge>
+                      </span>
+                      <span className="mt-0.5 block font-mono text-[11px] text-[var(--erp-muted)]">
                         {f.key}
                       </span>
+                      {f.dependsOnFeatureKey && (
+                        <span className="mt-1 block text-[11px] text-[var(--erp-muted)]">
+                          Requires {f.dependsOnFeatureKey}
+                          {depMissing && !on
+                            ? ' (will auto-enable parent when turned on)'
+                            : ''}
+                        </span>
+                      )}
                     </span>
                   </label>
                 );

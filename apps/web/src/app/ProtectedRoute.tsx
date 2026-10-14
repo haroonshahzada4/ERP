@@ -10,14 +10,20 @@ export function ProtectedRoute() {
   const onPlatform = location.pathname.startsWith('/platform');
 
   const hostMismatch =
-    !!session && !!host && !hostMatchesTenant(host, session.tenant);
+    !!session &&
+    session.audience !== 'platform' &&
+    !!host &&
+    !!session.tenant &&
+    !hostMatchesTenant(host, session.tenant);
   const apexNonAdmin = !!session && !host && !session.isPlatformAdmin;
+  const platformOnTenantHost =
+    !!session && session.audience === 'platform' && !!host;
 
   useEffect(() => {
-    if (hostMismatch || apexNonAdmin) {
+    if (hostMismatch || apexNonAdmin || platformOnTenantHost) {
       void logout();
     }
-  }, [hostMismatch, apexNonAdmin, logout]);
+  }, [hostMismatch, apexNonAdmin, platformOnTenantHost, logout]);
 
   if (loading) {
     return (
@@ -27,7 +33,7 @@ export function ProtectedRoute() {
     );
   }
 
-  if (!session || hostMismatch || apexNonAdmin) {
+  if (!session || hostMismatch || apexNonAdmin || platformOnTenantHost) {
     if (onPlatform) return <Navigate to="/platform/login" replace />;
     return <Navigate to="/login" replace />;
   }

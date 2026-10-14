@@ -4,6 +4,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { CatalogSeeder } from '../../platform/catalog/catalog.seeder';
 import { TenantProvisionerService } from '../../platform/tenants/tenant-provisioner.service';
+import { ensurePlatformSuperAdmin } from './seeders/demo.seeder';
 
 const SEED_TENANTS = [
   {
@@ -79,6 +80,9 @@ export class DatabaseBootstrapService implements OnApplicationBootstrap {
             : seed.adminEmail,
       });
     }
+
+    // Platform Super Admin: global user only — no tenant memberships.
+    await ensurePlatformSuperAdmin(this.masterDs, password);
 
     await this.catalogSeeder.seedAll();
   }

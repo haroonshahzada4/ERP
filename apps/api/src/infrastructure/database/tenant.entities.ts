@@ -20,6 +20,16 @@ import { Shift } from '../../modules/hrm/attendance/entities/shift.entity';
 import { LeaveBalance } from '../../modules/hrm/leaves/entities/leave-balance.entity';
 import { Leave } from '../../modules/hrm/leaves/entities/leave.entity';
 import { LeaveType } from '../../modules/hrm/leaves/entities/leave-type.entity';
+import { PayrollAllowance } from '../../modules/hrm/payroll/entities/allowance.entity';
+import { Compensation } from '../../modules/hrm/payroll/entities/compensation.entity';
+import { PayrollDeduction } from '../../modules/hrm/payroll/entities/deduction.entity';
+import { PayrollApproval } from '../../modules/hrm/payroll/entities/payroll-approval.entity';
+import { PayrollItem } from '../../modules/hrm/payroll/entities/payroll-item.entity';
+import { PayrollRun } from '../../modules/hrm/payroll/entities/payroll-run.entity';
+import { Payslip } from '../../modules/hrm/payroll/entities/payslip.entity';
+import { TaxSlab } from '../../modules/hrm/payroll/entities/tax-slab.entity';
+import { JobApplication } from '../../modules/hrm/recruitment/entities/job-application.entity';
+import { Job } from '../../modules/hrm/recruitment/entities/job.entity';
 
 export const tenantEntities = [
   CompanySettings,
@@ -44,4 +54,14 @@ export const tenantEntities = [
   LeaveType,
   LeaveBalance,
   Leave,
+  Compensation,
+  PayrollAllowance,
+  PayrollDeduction,
+  TaxSlab,
+  PayrollRun,
+  PayrollItem,
+  PayrollApproval,
+  Payslip,
+  Job,
+  JobApplication,
 ];
