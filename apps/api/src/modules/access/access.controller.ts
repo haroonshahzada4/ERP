@@ -10,6 +10,7 @@ import {
   AssignRoleDto,
   CreatePermissionDto,
   CreateRoleDto,
+  SetRolePermissionsDto,
   ToggleRolePermissionDto,
   UpdatePermissionDto,
   UpdateRoleDto,
@@ -47,6 +48,16 @@ export class AccessController {
   @ApiOperation({ summary: 'Delete role' })
   deleteRole(@Param('id') id: number) {
     return this.accessService.deleteRole(id);
+  }
+
+  @Put('roles/:roleId/permissions')
+  @RequirePermissions('roles.manage')
+  @ApiOperation({ summary: 'Replace all permissions on a role (matrix save)' })
+  setRolePermissions(
+    @Param('roleId') roleId: number,
+    @Body() dto: SetRolePermissionsDto,
+  ) {
+    return this.accessService.setRolePermissions(roleId, dto.permissionKeys);
   }
 
   @Put('roles/:roleId/permissions/:permissionKey')

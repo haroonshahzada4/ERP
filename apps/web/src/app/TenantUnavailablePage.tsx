@@ -36,7 +36,7 @@ export function TenantUnavailablePage({
         </div>
         {reason === 'apex' && (
           <p className="rounded-xl border border-[var(--erp-line)] bg-[var(--erp-panel-2)] px-3 py-2 font-mono text-xs text-[var(--erp-muted)]">
-            https://&lt;company&gt;.localhost:5173
+            http://&lt;company&gt;.localhost:8001
           </p>
         )}
         <Link

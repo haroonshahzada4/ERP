@@ -1,8 +1,8 @@
 export default () => ({
   nodeEnv: process.env.NODE_ENV ?? 'development',
-  port: parseInt(process.env.PORT ?? '3000', 10),
+  port: parseInt(process.env.PORT ?? '8000', 10),
   apiPrefix: process.env.API_PREFIX ?? 'api/v1',
-  corsOrigin: process.env.CORS_ORIGIN ?? 'http://localhost:5173',
+  corsOrigin: process.env.CORS_ORIGIN ?? 'http://localhost:8001',
   masterDb: {
     enabled: (process.env.MASTER_DB_ENABLED ?? 'true') === 'true',
     host: process.env.MASTER_DB_HOST ?? 'localhost',

@@ -1,6 +1,26 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseIntPipe,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsBoolean, IsNumber, IsOptional, IsString, IsInt, Min, MinLength } from 'class-validator';
+import { Type } from 'class-transformer';
+import {
+  IsBoolean,
+  IsDateString,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Min,
+  MinLength,
+} from 'class-validator';
 import {
   AuthUser,
   CurrentUser,
@@ -14,15 +34,27 @@ class CreateLeaveTypeDto {
   @IsString() @MinLength(2) code!: string;
   @IsOptional() @IsBoolean() isPaid?: boolean;
   @IsOptional() @IsBoolean() allowHalfDay?: boolean;
-  @IsOptional() @IsNumber() @Min(0) maxDaysPerYear?: number;
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0) maxDaysPerYear?: number;
 }
 
 class ApplyLeaveDto {
-  @IsInt() leaveTypeId!: number;
-  @IsString() startDate!: string;
-  @IsString() endDate!: string;
-  @IsOptional() @IsBoolean() isHalfDay?: boolean;
-  @IsString() @MinLength(3) reason!: string;
+  @Type(() => Number)
+  @IsInt()
+  leaveTypeId!: number;
+
+  @IsDateString()
+  startDate!: string;
+
+  @IsDateString()
+  endDate!: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isHalfDay?: boolean;
+
+  @IsString()
+  @MinLength(3)
+  reason!: string;
 }
 
 class DecideDto {
@@ -85,6 +117,27 @@ export class LeavesController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.leaves.getRequest(id, user);
+  }
+
+  @Patch('requests/:id')
+  @RequirePermissions('leave.read')
+  @ApiOperation({ summary: 'Edit own pending leave request' })
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthUser,
+    @Body() dto: ApplyLeaveDto,
+  ) {
+    return this.leaves.updateRequest(id, user, dto);
+  }
+
+  @Delete('requests/:id')
+  @RequirePermissions('leave.read')
+  @ApiOperation({ summary: 'Cancel/delete own pending leave request' })
+  remove(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.leaves.cancelRequest(id, user);
   }
 
   @Post('requests/:id/decide')

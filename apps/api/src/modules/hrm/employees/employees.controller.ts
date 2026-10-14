@@ -30,8 +30,9 @@ export class EmployeesController {
   }
 
   @Get('me')
-  @RequirePermissions('employee.read')
-  @ApiOperation({ summary: 'My employee profile' })
+  @ApiOperation({
+    summary: 'My employee profile (self — no employee.read required)',
+  })
   me(@CurrentUser() user: AuthUser) {
     return this.employeesService.myProfile(user);
   }

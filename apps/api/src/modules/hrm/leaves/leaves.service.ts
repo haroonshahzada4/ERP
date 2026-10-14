@@ -194,8 +194,12 @@ export class LeavesService {
 
     if (status) qb.andWhere('r.status = :status', { status });
 
+    const self = await ds.getRepository(Employee).findOne({
+      where: { userId: user.userId },
+    });
+
     if (!canApproveLeave(user)) {
-      const self = await this.requireSelf(ds, user);
+      if (!self) return [];
       const reports = await ds.getRepository(Employee).find({
         where: { reportingToId: self.id },
         select: ['id'],
@@ -204,7 +208,10 @@ export class LeavesService {
       qb.andWhere('r.employeeId IN (:...ids)', { ids });
     }
 
-    return (await qb.getMany()).map((r) => this.serialize(r));
+    const rows = await qb.getMany();
+    return rows.map((r) =>
+      this.serialize(r, this.actionsFor(r, user, self?.id ?? null)),
+    );
   }
 
   async getRequest(id: number, user: AuthUser) {
@@ -215,7 +222,129 @@ export class LeavesService {
     });
     if (!row) throw new NotFoundException('Leave request not found');
     await this.assertCanSee(ds, row, user);
-    return this.serialize(row);
+    const self = await ds.getRepository(Employee).findOne({
+      where: { userId: user.userId },
+    });
+    return this.serialize(
+      row,
+      this.actionsFor(row, user, self?.id ?? null),
+    );
+  }
+
+  /** Owner may edit only while awaiting manager. */
+  async updateRequest(
+    id: number,
+    user: AuthUser,
+    input: {
+      leaveTypeId: number;
+      startDate: string;
+      endDate: string;
+      isHalfDay?: boolean;
+      reason: string;
+    },
+  ) {
+    const ds = await this.ds();
+    const self = await this.requireSelf(ds, user);
+    const repo = ds.getRepository(Leave);
+    const row = await repo.findOne({
+      where: { id },
+      relations: { employee: true, leaveType: true },
+    });
+    if (!row) throw new NotFoundException('Leave request not found');
+    if (row.employeeId !== self.id) {
+      throw new ForbiddenException('You can only edit your own requests');
+    }
+    if (row.status !== 'pending_manager') {
+      throw new BadRequestException(
+        'Only requests awaiting manager approval can be edited',
+      );
+    }
+
+    const leaveType = await ds.getRepository(LeaveType).findOne({
+      where: { id: input.leaveTypeId, isActive: true },
+    });
+    if (!leaveType) throw new NotFoundException('Leave type not found');
+    if (input.startDate > input.endDate) {
+      throw new BadRequestException('startDate must be on or before endDate');
+    }
+
+    let days = this.countDays(input.startDate, input.endDate);
+    if (input.isHalfDay) {
+      if (!leaveType.allowHalfDay) {
+        throw new BadRequestException('Half day not allowed for this type');
+      }
+      if (input.startDate !== input.endDate) {
+        throw new BadRequestException('Half day must be a single date');
+      }
+      days = 0.5;
+    }
+
+    const session = currentLeaveSession();
+    await this.ensureBalancesForEmployee(ds, self.id, session);
+    const balance = await ds.getRepository(LeaveBalance).findOne({
+      where: {
+        employeeId: self.id,
+        leaveTypeId: leaveType.id,
+        sessionStartsOn: session.startsOn,
+      },
+    });
+    if (!balance) throw new BadRequestException('No leave balance');
+    const remaining = Number(balance.accrued) - Number(balance.used);
+    if (days > remaining) {
+      throw new BadRequestException(
+        `Insufficient balance (${remaining} remaining)`,
+      );
+    }
+
+    const overlap = await ds
+      .getRepository(Leave)
+      .createQueryBuilder('r')
+      .where('r.employeeId = :employeeId', { employeeId: self.id })
+      .andWhere('r.id <> :id', { id: row.id })
+      .andWhere('r.status IN (:...statuses)', {
+        statuses: ['pending_manager', 'pending_hr', 'approved'],
+      })
+      .andWhere('r.startDate <= :end AND r.endDate >= :start', {
+        start: input.startDate,
+        end: input.endDate,
+      })
+      .getOne();
+    if (overlap) {
+      throw new BadRequestException('Overlapping leave request exists');
+    }
+
+    row.leaveTypeId = leaveType.id;
+    row.startDate = input.startDate;
+    row.endDate = input.endDate;
+    row.days = String(days);
+    row.isHalfDay = !!input.isHalfDay;
+    row.reason = input.reason;
+    await repo.save(row);
+    return this.getRequest(row.id, user);
+  }
+
+  /** Owner may cancel/delete while still pending. */
+  async cancelRequest(id: number, user: AuthUser) {
+    const ds = await this.ds();
+    const self = await this.requireSelf(ds, user);
+    const repo = ds.getRepository(Leave);
+    const row = await repo.findOne({
+      where: { id },
+      relations: { employee: true, leaveType: true },
+    });
+    if (!row) throw new NotFoundException('Leave request not found');
+    if (row.employeeId !== self.id) {
+      throw new ForbiddenException('You can only delete your own requests');
+    }
+    if (row.status !== 'pending_manager' && row.status !== 'pending_hr') {
+      throw new BadRequestException('Only pending requests can be deleted');
+    }
+    row.status = 'cancelled';
+    await repo.save(row);
+    return this.serialize(
+      row,
+      this.actionsFor(row, user, self.id),
+    );
   }
 
   async decide(
@@ -240,7 +369,7 @@ export class LeavesService {
       if (!input.approve) {
         row.status = 'rejected';
         await repo.save(row);
-        return this.serialize(row);
+        return this.getRequest(row.id, user);
       }
       row.status = 'pending_hr';
       row.hrStatus = 'pending';
@@ -259,7 +388,7 @@ export class LeavesService {
       if (!input.approve) {
         row.status = 'rejected';
         await repo.save(row);
-        return this.serialize(row);
+        return this.getRequest(row.id, user);
       }
       row.status = 'approved';
       await repo.save(row);
@@ -362,7 +491,40 @@ export class LeavesService {
     }
   }
 
-  private serialize(r: Leave) {
+  private actionsFor(
+    r: Leave,
+    user: AuthUser,
+    selfEmployeeId: number | null,
+  ) {
+    const isMine =
+      selfEmployeeId != null && r.employeeId === selfEmployeeId;
+    const isHr = canApproveLeave(user);
+    const isManagerOf =
+      selfEmployeeId != null &&
+      r.employee?.reportingToId === selfEmployeeId;
+
+    const canEdit = isMine && r.status === 'pending_manager';
+    const canDelete =
+      isMine &&
+      (r.status === 'pending_manager' || r.status === 'pending_hr');
+    /** Never show approve/reject on your own request. */
+    const canDecide =
+      !isMine &&
+      ((r.status === 'pending_hr' && isHr) ||
+        (r.status === 'pending_manager' && (isHr || isManagerOf)));
+
+    return { isMine, canEdit, canDelete, canDecide };
+  }
+
+  private serialize(
+    r: Leave,
+    actions?: {
+      isMine: boolean;
+      canEdit: boolean;
+      canDelete: boolean;
+      canDecide: boolean;
+    },
+  ) {
     const approvals: {
       step: 'manager' | 'hr';
       status: string;
@@ -394,6 +556,7 @@ export class LeavesService {
             id: r.employee.id,
             fullName: `${r.employee.firstName} ${r.employee.lastName}`,
             employeeCode: r.employee.employeeCode,
+            reportingToId: r.employee.reportingToId,
           }
         : null,
       leaveType: r.leaveType
@@ -415,6 +578,12 @@ export class LeavesService {
       reason: r.reason,
       status: r.status,
       approvals,
+      actions: actions ?? {
+        isMine: false,
+        canEdit: false,
+        canDelete: false,
+        canDecide: false,
+      },
       createdAt: r.createdAt,
     };
   }

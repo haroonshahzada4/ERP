@@ -20,7 +20,7 @@ async function bootstrap() {
   app.setGlobalPrefix(apiPrefix);
 
   app.enableCors({
-    origin: config.get<string>('corsOrigin') ?? 'http://localhost:5173',
+    origin: config.get<string>('corsOrigin') ?? 'http://localhost:8001',
     credentials: true,
   });
 
@@ -41,7 +41,7 @@ async function bootstrap() {
     .build();
   SwaggerModule.setup('docs', app, SwaggerModule.createDocument(app, swagger));
 
-  const port = config.get<number>('port') ?? 3000;
+  const port = config.get<number>('port') ?? 8000;
   await app.listen(port);
 
   const logger = app.get(Logger);

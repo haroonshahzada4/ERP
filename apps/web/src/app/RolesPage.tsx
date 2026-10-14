@@ -3,12 +3,13 @@ import {
   ChevronDown,
   ChevronRight,
   Plus,
+  Save,
   Search,
   Shield,
   Trash2,
   UserCog,
 } from 'lucide-react';
-import { Fragment, useMemo, useState, type FormEvent } from 'react';
+import { Fragment, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { apiDelete, apiGet, apiPatch, apiPost, apiPut } from '../lib/api';
 import { useAuth } from '../lib/auth';
 
@@ -28,9 +29,26 @@ type Role = {
   permissions: string[];
 };
 
+type PlanFeature = {
+  key: string;
+  name: string;
+  description: string | null;
+  permissions: string[];
+};
+
+type PlanModule = {
+  key: string;
+  name: string;
+  description: string | null;
+  features: PlanFeature[];
+};
+
 type RolesMatrix = {
   permissions: Permission[];
   roles: Role[];
+  enabledFeatures?: string[];
+  planModules?: PlanModule[];
+  corePermissions?: string[];
 };
 
 type MemberRow = {
@@ -52,6 +70,30 @@ function titleCase(mod: string) {
     .join(' ');
 }
 
+/** Prefer catalog module/feature labels when entitlements are present. */
+function groupKeyForPermission(
+  permission: Permission,
+  matrix: RolesMatrix | undefined,
+): { groupKey: string; groupLabel: string; featureLabel?: string } {
+  const core = matrix?.corePermissions ?? [];
+  if (core.includes(permission.key)) {
+    return { groupKey: 'company', groupLabel: 'Company' };
+  }
+  for (const mod of matrix?.planModules ?? []) {
+    for (const feat of mod.features) {
+      if (feat.permissions.includes(permission.key)) {
+        return {
+          groupKey: `${mod.key}:${feat.key}`,
+          groupLabel: `${mod.name} · ${feat.name}`,
+          featureLabel: feat.key,
+        };
+      }
+    }
+  }
+  const fallback = moduleOf(permission.key);
+  return { groupKey: fallback, groupLabel: titleCase(fallback) };
+}
+
 export function RolesPage() {
   const { session } = useAuth();
   const token = session?.accessToken;
@@ -63,6 +105,10 @@ export function RolesPage() {
   const [moduleFilter, setModuleFilter] = useState<string>('all');
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [showCreate, setShowCreate] = useState(false);
+  /** Local matrix edits — saved in one API batch per dirty role. */
+  const [draft, setDraft] = useState<Record<string, string[]> | null>(null);
+  const [dirty, setDirty] = useState(false);
+  const [saveOk, setSaveOk] = useState<string | null>(null);
 
   const roles = useQuery({
     queryKey: ['roles-matrix'],
@@ -81,39 +127,57 @@ export function RolesPage() {
     queryClient.invalidateQueries({ queryKey: ['members'] });
   };
 
-  const modules = useMemo(() => {
-    const set = new Set((roles.data?.permissions ?? []).map((p) => moduleOf(p.key)));
-    return [...set].sort();
-  }, [roles.data?.permissions]);
+  useEffect(() => {
+    if (!roles.data || dirty) return;
+    setDraft(
+      Object.fromEntries(
+        roles.data.roles.map((r) => [r.id, [...r.permissions]]),
+      ),
+    );
+  }, [roles.data, dirty]);
+
+  const moduleFilters = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const p of roles.data?.permissions ?? []) {
+      const g = groupKeyForPermission(p, roles.data);
+      labels.set(g.groupKey, g.groupLabel);
+    }
+    return [...labels.entries()]
+      .sort((a, b) => a[1].localeCompare(b[1]))
+      .map(([key, label]) => ({ key, label }));
+  }, [roles.data]);
 
   const filteredBySearch = useMemo(() => {
     const q = search.trim().toLowerCase();
     return (roles.data?.permissions ?? []).filter((p) => {
-      if (moduleFilter !== 'all' && moduleOf(p.key) !== moduleFilter) return false;
+      const g = groupKeyForPermission(p, roles.data);
+      if (moduleFilter !== 'all' && g.groupKey !== moduleFilter) return false;
       if (!q) return true;
       return (
         p.key.toLowerCase().includes(q) ||
         p.label.toLowerCase().includes(q) ||
+        g.groupLabel.toLowerCase().includes(q) ||
         (p.description ?? '').toLowerCase().includes(q)
       );
     });
-  }, [roles.data?.permissions, search, moduleFilter]);
+  }, [roles.data, search, moduleFilter]);
 
   const grouped = useMemo(() => {
-    const map = new Map<string, Permission[]>();
+    const map = new Map<string, { label: string; perms: Permission[] }>();
     for (const p of filteredBySearch) {
-      const mod = moduleOf(p.key);
-      const list = map.get(mod) ?? [];
-      list.push(p);
-      map.set(mod, list);
+      const g = groupKeyForPermission(p, roles.data);
+      const entry = map.get(g.groupKey) ?? { label: g.groupLabel, perms: [] };
+      entry.perms.push(p);
+      map.set(g.groupKey, entry);
     }
     return [...map.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([mod, perms]) => ({
+      .sort((a, b) => a[1].label.localeCompare(b[1].label))
+      .map(([mod, { label, perms }]) => ({
         mod,
+        label,
         perms: perms.sort((a, b) => a.key.localeCompare(b.key)),
       }));
-  }, [filteredBySearch]);
+  }, [filteredBySearch, roles.data]);
 
   const createPermission = useMutation({
     mutationFn: () => apiPost('/access/permissions', permForm, token),
@@ -161,43 +225,41 @@ export function RolesPage() {
     onError: (err) => setError((err as Error).message),
   });
 
-  const toggleGrant = useMutation({
-    mutationFn: ({
-      roleId,
-      permissionKey,
-      granted,
-    }: {
-      roleId: string;
-      permissionKey: string;
-      granted: boolean;
-    }) =>
-      apiPut(
-        `/access/roles/${roleId}/permissions/${permissionKey}`,
-        { granted },
-        token,
-      ),
-    onMutate: async ({ roleId, permissionKey, granted }) => {
-      await queryClient.cancelQueries({ queryKey: ['roles-matrix'] });
-      const prev = queryClient.getQueryData<RolesMatrix>(['roles-matrix']);
-      if (prev) {
-        queryClient.setQueryData<RolesMatrix>(['roles-matrix'], {
-          ...prev,
-          roles: prev.roles.map((role) => {
-            if (role.id !== roleId) return role;
-            const set = new Set(role.permissions);
-            if (granted) set.add(permissionKey);
-            else set.delete(permissionKey);
-            return { ...role, permissions: [...set] };
-          }),
-        });
-      }
-      return { prev };
+  const saveGrants = useMutation({
+    mutationFn: async () => {
+      if (!roles.data || !draft) return;
+      const dirtyRoles = roles.data.roles.filter((role) => {
+        if (role.fullAccess) return false;
+        const next = [...(draft[role.id] ?? [])].sort().join('\0');
+        const prev = [...role.permissions].sort().join('\0');
+        return next !== prev;
+      });
+      if (!dirtyRoles.length) return { saved: 0 };
+      await Promise.all(
+        dirtyRoles.map((role) =>
+          apiPut(
+            `/access/roles/${role.id}/permissions`,
+            { permissionKeys: draft[role.id] ?? [] },
+            token,
+          ),
+        ),
+      );
+      return { saved: dirtyRoles.length };
     },
-    onError: (err, _vars, ctx) => {
-      if (ctx?.prev) queryClient.setQueryData(['roles-matrix'], ctx.prev);
+    onSuccess: (result) => {
+      setDirty(false);
+      setError(null);
+      setSaveOk(
+        result?.saved
+          ? `Saved permissions for ${result.saved} role${result.saved === 1 ? '' : 's'}`
+          : 'No changes to save',
+      );
+      invalidate();
+    },
+    onError: (err) => {
+      setSaveOk(null);
       setError((err as Error).message);
     },
-    onSettled: invalidate,
   });
 
   const assign = useMutation({
@@ -219,7 +281,17 @@ export function RolesPage() {
   });
 
   const roleList = roles.data?.roles ?? [];
-  const busy = toggleGrant.isPending;
+  const busy = saveGrants.isPending;
+
+  const hasUnsavedChanges = useMemo(() => {
+    if (!roles.data || !draft) return false;
+    return roles.data.roles.some((role) => {
+      if (role.fullAccess) return false;
+      const next = [...(draft[role.id] ?? [])].sort().join('\0');
+      const prev = [...role.permissions].sort().join('\0');
+      return next !== prev;
+    });
+  }, [roles.data, draft]);
 
   function toggleModule(mod: string) {
     setCollapsed((c) => ({ ...c, [mod]: !c[mod] }));
@@ -233,6 +305,37 @@ export function RolesPage() {
     const next: Record<string, boolean> = {};
     for (const { mod } of grouped) next[mod] = true;
     setCollapsed(next);
+  }
+
+  function isGranted(role: Role, permissionKey: string) {
+    if (role.fullAccess) return true;
+    return (draft?.[role.id] ?? role.permissions).includes(permissionKey);
+  }
+
+  function toggleDraft(roleId: string, permissionKey: string) {
+    setSaveOk(null);
+    setDraft((prev) => {
+      const base =
+        prev ??
+        Object.fromEntries(roleList.map((r) => [r.id, [...r.permissions]]));
+      const set = new Set(base[roleId] ?? []);
+      if (set.has(permissionKey)) set.delete(permissionKey);
+      else set.add(permissionKey);
+      return { ...base, [roleId]: [...set] };
+    });
+    setDirty(true);
+  }
+
+  function discardDraft() {
+    if (!roles.data) return;
+    setDraft(
+      Object.fromEntries(
+        roles.data.roles.map((r) => [r.id, [...r.permissions]]),
+      ),
+    );
+    setDirty(false);
+    setSaveOk(null);
+    setError(null);
   }
 
   return (
@@ -250,8 +353,8 @@ export function RolesPage() {
             </p>
             <h1 className="mt-2 text-3xl font-semibold tracking-tight">Roles & permissions</h1>
             <p className="mt-2 max-w-xl text-[var(--erp-muted)]">
-              Only Company Admin has full company access. HR, Manager, and Employee start
-              with no grants — assign permissions dynamically below.
+              Only permissions for features enabled on this company&apos;s plan are listed.
+              Company Admin still has full access within those enabled modules.
             </p>
           </div>
           <button
@@ -270,6 +373,38 @@ export function RolesPage() {
           {error}
         </p>
       )}
+      {saveOk && !error && (
+        <p className="rounded-xl border border-[color-mix(in_srgb,var(--erp-accent)_30%,transparent)] bg-[color-mix(in_srgb,var(--erp-accent)_10%,transparent)] px-3 py-2 text-sm text-[var(--erp-accent)]">
+          {saveOk}
+        </p>
+      )}
+
+      {(hasUnsavedChanges || dirty) && (
+        <div className="sticky top-2 z-20 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[color-mix(in_srgb,var(--erp-accent)_35%,transparent)] bg-[color-mix(in_srgb,var(--erp-panel)_92%,transparent)] px-4 py-3 shadow-lg backdrop-blur">
+          <p className="text-sm text-[var(--erp-muted)]">
+            Permission changes are local until you save.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="erp-btn"
+              disabled={busy}
+              onClick={discardDraft}
+            >
+              Discard
+            </button>
+            <button
+              type="button"
+              className="erp-btn erp-btn-primary"
+              disabled={busy || !hasUnsavedChanges}
+              onClick={() => saveGrants.mutate()}
+            >
+              <Save size={16} />
+              {busy ? 'Saving…' : 'Save permissions'}
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {roleList.map((role) => {
@@ -281,7 +416,7 @@ export function RolesPage() {
             .slice(0, 3);
           const grantCount = role.fullAccess
             ? 'All'
-            : String(role.permissions.length);
+            : String((draft?.[role.id] ?? role.permissions).length);
           return (
             <div
               key={role.id}
@@ -402,6 +537,26 @@ export function RolesPage() {
         </div>
       )}
 
+      {(roles.data?.enabledFeatures?.length ?? 0) > 0 && (
+        <div className="erp-panel flex flex-wrap items-center gap-2 p-4">
+          <span className="text-xs font-semibold uppercase tracking-wider text-[var(--erp-muted)]">
+            Active features
+          </span>
+          {(roles.data?.planModules ?? []).flatMap((mod) =>
+            mod.features.map((f) => (
+              <span key={f.key} className="erp-badge erp-badge-accent" title={mod.name}>
+                {mod.name}: {f.name}
+              </span>
+            )),
+          )}
+          {(roles.data?.corePermissions ?? []).map((key) => (
+            <span key={key} className="erp-badge erp-badge-neutral">
+              {key}
+            </span>
+          ))}
+        </div>
+      )}
+
       <div className="erp-panel overflow-hidden">
         <div className="flex flex-col gap-3 border-b border-[var(--erp-line)] bg-[var(--erp-hover)] p-4 md:flex-row md:items-center md:justify-between">
           <div className="relative min-w-0 flex-1 md:max-w-sm">
@@ -447,16 +602,17 @@ export function RolesPage() {
           >
             All modules
           </button>
-          {modules.map((mod) => (
+          {moduleFilters.map((mod) => (
             <button
-              key={mod}
+              key={mod.key}
               type="button"
-              className={['erp-chip', moduleFilter === mod ? 'erp-chip-active' : ''].join(
-                ' ',
-              )}
-              onClick={() => setModuleFilter(mod)}
+              className={[
+                'erp-chip',
+                moduleFilter === mod.key ? 'erp-chip-active' : '',
+              ].join(' ')}
+              onClick={() => setModuleFilter(mod.key)}
             >
-              {titleCase(mod)}
+              {mod.label}
             </button>
           ))}
         </div>
@@ -524,7 +680,7 @@ export function RolesPage() {
                   </td>
                 </tr>
               )}
-              {grouped.map(({ mod, perms }) => {
+              {grouped.map(({ mod, label, perms }) => {
                 const isCollapsed = !!collapsed[mod];
                 return (
                   <Fragment key={`mod-${mod}`}>
@@ -544,7 +700,7 @@ export function RolesPage() {
                             <ChevronDown size={16} className="text-[var(--erp-accent)]" />
                           )}
                           <span className="font-semibold text-[var(--erp-accent)]">
-                            {titleCase(mod)}
+                            {label}
                           </span>
                           <span className="rounded-full bg-[var(--erp-accent-soft)] px-2 py-0.5 text-[10px] font-medium text-[var(--erp-accent)]">
                             {perms.length}
@@ -599,9 +755,7 @@ export function RolesPage() {
                             </div>
                           </td>
                           {roleList.map((role) => {
-                            const granted =
-                              !!role.fullAccess ||
-                              role.permissions.includes(permission.key);
+                            const granted = isGranted(role, permission.key);
                             const locked = !!role.fullAccess;
                             return (
                               <td
@@ -623,21 +777,11 @@ export function RolesPage() {
                                     type="checkbox"
                                     className="erp-check"
                                     checked={granted}
-                                    disabled={
-                                      locked ||
-                                      (busy &&
-                                        toggleGrant.variables?.roleId === role.id &&
-                                        toggleGrant.variables?.permissionKey ===
-                                          permission.key)
-                                    }
+                                    disabled={locked || busy}
                                     aria-label={`${role.name}: ${permission.label}`}
                                     onChange={() => {
                                       if (locked) return;
-                                      toggleGrant.mutate({
-                                        roleId: role.id,
-                                        permissionKey: permission.key,
-                                        granted: !granted,
-                                      });
+                                      toggleDraft(role.id, permission.key);
                                     }}
                                   />
                                 </label>

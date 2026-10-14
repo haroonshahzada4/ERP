@@ -9,6 +9,12 @@ import {
 } from '../../platform/auth/entities/tenant-membership.entity';
 import { User } from '../../platform/auth/entities/user.entity';
 import { RbacService } from '../../platform/auth/rbac.service';
+import {
+  activeCatalogModules,
+  CORE_TENANT_PERMISSION_KEYS,
+  isPermissionVisibleForFeatures,
+} from '../../platform/catalog/catalog.definitions';
+import { EntitlementsService } from '../../platform/catalog/entitlements.service';
 import { TenantDatabase } from '../../platform/tenants/entities/tenant-database.entity';
 import {
   CreatePermissionDto,
@@ -37,6 +43,7 @@ export class AccessService {
     private readonly users: Repository<User>,
     private readonly tenantConnections: TenantConnectionManager,
     private readonly rbac: RbacService,
+    private readonly entitlements: EntitlementsService,
   ) {}
 
   private async bustRbacCache() {
@@ -44,19 +51,44 @@ export class AccessService {
     if (tenant) await this.rbac.invalidateTenant(tenant.tenantId);
   }
 
+  private async enabledFeatureKeys() {
+    const tenant = getTenantContext();
+    if (!tenant) throw new ForbiddenException('Tenant required');
+    const snap = await this.entitlements.getSnapshot(tenant.tenantId);
+    return snap.enabledFeatures;
+  }
+
+  private async assertPermissionEntitled(permissionKey: string) {
+    const enabled = await this.enabledFeatureKeys();
+    if (!isPermissionVisibleForFeatures(permissionKey, enabled)) {
+      throw new ForbiddenException(
+        `Permission “${permissionKey}” belongs to a feature that is not enabled for this company`,
+      );
+    }
+  }
+
   async listRolesMatrix() {
     const ds = await this.tenantDs();
+    const enabledFeatures = await this.enabledFeatureKeys();
     const roles = await ds.getRepository(Role).find({
       relations: { rolePermissions: { permission: true } },
       order: { name: 'ASC' },
     });
-    const permissions = await ds.getRepository(Permission).find({
-      order: { key: 'ASC' },
-    });
+    const permissions = (
+      await ds.getRepository(Permission).find({
+        order: { key: 'ASC' },
+      })
+    ).filter((p) =>
+      isPermissionVisibleForFeatures(p.key, enabledFeatures),
+    );
 
     const allKeys = permissions.map((p) => p.key);
+    const visibleKeySet = new Set(allKeys);
 
     return {
+      enabledFeatures,
+      planModules: activeCatalogModules(enabledFeatures),
+      corePermissions: [...CORE_TENANT_PERMISSION_KEYS],
       permissions: permissions.map((p) => ({
         id: p.id,
         key: p.key,
@@ -65,21 +97,25 @@ export class AccessService {
       })),
       roles: roles.map((role) => {
         const fullAccess = isCompanyAdminRole(role.key);
+        const granted = fullAccess
+          ? allKeys
+          : (role.rolePermissions ?? [])
+              .map((rp) => rp.permission.key)
+              .filter((key) => visibleKeySet.has(key));
         return {
           id: role.id,
           key: role.key === 'tenant_admin' ? COMPANY_ADMIN_ROLE : role.key,
           name: fullAccess ? 'Company Admin' : role.name,
           isSystem: role.isSystem,
           fullAccess,
-          permissions: fullAccess
-            ? allKeys
-            : (role.rolePermissions ?? []).map((rp) => rp.permission.key),
+          permissions: granted,
         };
       }),
     };
   }
 
   async createPermission(dto: CreatePermissionDto) {
+    await this.assertPermissionEntitled(dto.key);
     const ds = await this.tenantDs();
     const repo = ds.getRepository(Permission);
     const existing = await repo.findOne({ where: { key: dto.key } });
@@ -175,6 +211,10 @@ export class AccessService {
       );
     }
 
+    if (granted) {
+      await this.assertPermissionEntitled(permissionKey);
+    }
+
     const permission = await ds
       .getRepository(Permission)
       .findOne({ where: { key: permissionKey } });
@@ -202,6 +242,62 @@ export class AccessService {
       roleKey: role.key,
       permissionKey,
       granted,
+    };
+  }
+
+  /** Replace a role's grants in one request (matrix Save). */
+  async setRolePermissions(roleId: number, permissionKeys: string[]) {
+    const ds = await this.tenantDs();
+    const role = await ds.getRepository(Role).findOne({ where: { id: roleId } });
+    if (!role) throw new NotFoundException('Role not found');
+
+    if (isCompanyAdminRole(role.key)) {
+      throw new BadRequestException(
+        'Company Admin has full tenant access by scope; grants cannot be edited',
+      );
+    }
+
+    const enabled = await this.enabledFeatureKeys();
+    const uniqueKeys = [...new Set(permissionKeys.map((k) => k.trim()).filter(Boolean))];
+    for (const key of uniqueKeys) {
+      if (!isPermissionVisibleForFeatures(key, enabled)) {
+        throw new ForbiddenException(
+          `Permission “${key}” belongs to a feature that is not enabled for this company`,
+        );
+      }
+    }
+
+    const permRepo = ds.getRepository(Permission);
+    const permissions = uniqueKeys.length
+      ? await permRepo
+          .createQueryBuilder('p')
+          .where('p.key IN (:...keys)', { keys: uniqueKeys })
+          .getMany()
+      : [];
+
+    if (permissions.length !== uniqueKeys.length) {
+      const found = new Set(permissions.map((p) => p.key));
+      const missing = uniqueKeys.filter((k) => !found.has(k));
+      throw new NotFoundException(`Unknown permissions: ${missing.join(', ')}`);
+    }
+
+    const rpRepo = ds.getRepository(RolePermission);
+    await rpRepo.delete({ roleId: role.id });
+    if (permissions.length) {
+      await rpRepo.save(
+        permissions.map((p) =>
+          rpRepo.create({ roleId: role.id, permissionId: p.id }),
+        ),
+      );
+    }
+
+    await this.bustRbacCache();
+
+    return {
+      status: 'ok',
+      roleId: role.id,
+      roleKey: role.key,
+      permissionKeys: permissions.map((p) => p.key),
     };
   }
 

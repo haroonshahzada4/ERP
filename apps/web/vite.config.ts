@@ -5,12 +5,12 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
-    port: 5173,
-    // Allow company subdomains: http://horizon.localhost:5173
+    port: 8001,
+    // Allow company subdomains: http://horizon.localhost:8001
     host: true,
     proxy: {
       '/api': {
-        target: 'http://localhost:3000',
+        target: 'http://localhost:8000',
         changeOrigin: true,
         configure(proxy) {
           proxy.on('proxyReq', (proxyReq, req) => {

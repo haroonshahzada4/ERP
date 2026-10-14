@@ -11,9 +11,9 @@ npm install
 npm run dev
 ```
 
-- Web: open a **company subdomain** (see below) — Vite listens on port `5173`
-- API: http://localhost:3000/api/v1
-- Swagger: http://localhost:3000/docs
+- Web: open a **company subdomain** (see below) — Vite listens on port `8001`
+- API: http://localhost:8000/api/v1
+- Swagger: http://localhost:8000/docs
 
 ## Local login
 
@@ -21,17 +21,17 @@ Tenant is identified by the **subdomain** you open — there is no company picke
 
 | Company | URL | Admin email | Password | Theme |
 | --- | --- | --- | --- | --- |
-| Nexus HR | http://demo.localhost:5173 | `admin@demo.com` | `admin` | Emerald |
-| Horizon Logistics | http://horizon.localhost:5173 | `admin@horizon.com` | `admin` | Orange |
-| Summit Foods | http://summit.localhost:5173 | `admin@summit.com` | `admin` | Sky |
+| Nexus HR | http://demo.localhost:8001 | `admin@demo.com` | `admin` | Emerald |
+| Horizon Logistics | http://horizon.localhost:8001 | `admin@horizon.com` | `admin` | Orange |
+| Summit Foods | http://summit.localhost:8001 | `admin@summit.com` | `admin` | Sky |
 
 | Role | URL | Email | Password | Access |
 | --- | --- | --- | --- | --- |
-| Super Admin | http://localhost:5173/platform/login | `superadmin@demo.com` | `admin` | Platform console |
-| Company Admin | http://demo.localhost:5173 | `admin@demo.com` | `admin` | Full company access (`tenant:*`) |
-| HR | http://demo.localhost:5173 | `aisha.khan@demo.com` | `admin` | Role only — no default permissions (assign in Roles & Access) |
-| Manager | http://demo.localhost:5173 | `sara.malik@demo.com` | `admin` | Role only — no default permissions (assign in Roles & Access) |
-| Employee | http://demo.localhost:5173 | `bilal.ahmed@demo.com` | `admin` | Role only — no default permissions (assign in Roles & Access) |
+| Super Admin | http://localhost:8001/platform/login | `superadmin@demo.com` | `admin` | Platform console |
+| Company Admin | http://demo.localhost:8001 | `admin@demo.com` | `admin` | Full company access (`tenant:*`) |
+| HR | http://demo.localhost:8001 | `aisha.khan@demo.com` | `admin` | Role only — no default permissions (assign in Roles & Access) |
+| Manager | http://demo.localhost:8001 | `sara.malik@demo.com` | `admin` | Role only — no default permissions (assign in Roles & Access) |
+| Employee | http://demo.localhost:8001 | `bilal.ahmed@demo.com` | `admin` | Role only — no default permissions (assign in Roles & Access) |
 
 Only **Company Admin** has built-in full company access. HR / Manager / Employee start with **zero grants**; permissions are assigned dynamically per tenant.
 
@@ -63,7 +63,7 @@ npm run db:ensure
 | Horizon Logistics | Starter | `hrm.employees`, `hrm.attendance`, `hrm.leave` |
 | Summit Foods | Growth | Starter + `hrm.payroll` + `hrm.recruitment` |
 
-Super Admin (`platform:*`) manages plans, entitlements and support access at http://localhost:5173/platform — and does **not** automatically receive private tenant data access.
+Super Admin (`platform:*`) manages plans, entitlements and support access at http://localhost:8001/platform — and does **not** automatically receive private tenant data access.
 
 ## Phase status
 

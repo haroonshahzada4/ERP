@@ -1,5 +1,13 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsOptional, IsString, Matches, MinLength } from 'class-validator';
+import {
+  ArrayUnique,
+  IsArray,
+  IsBoolean,
+  IsOptional,
+  IsString,
+  Matches,
+  MinLength,
+} from 'class-validator';
 
 export class CreatePermissionDto {
   @ApiProperty({ example: 'reports.export' })
@@ -55,6 +63,18 @@ export class ToggleRolePermissionDto {
   @ApiProperty({ description: 'Grant when true, revoke when false' })
   @IsBoolean()
   granted!: boolean;
+}
+
+/** Replace all grants for a role in one save (Roles matrix). */
+export class SetRolePermissionsDto {
+  @ApiProperty({
+    type: [String],
+    description: 'Full set of permission keys to grant on this role',
+  })
+  @IsArray()
+  @ArrayUnique()
+  @IsString({ each: true })
+  permissionKeys!: string[];
 }
 
 export class AssignRoleDto {
